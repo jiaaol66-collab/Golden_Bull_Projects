@@ -22,9 +22,14 @@ logs/
 *_log/
 _log/
 *.log
-*.md
 *.trace
 *.env
+*.pid
+*.zip
+
+# Docs
+DB_README.md
+debug-*.md
 
 # Local temp markers
 *in-processing*
