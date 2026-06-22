@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# venv
+myenv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs / runtime
+logs/
+.dbg/
+*_log/
+_log/
+*.log
+*.md
+*.trace
+*.env
+
+# Local temp markers
+*in-processing*
+*completed*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Award child repos
+/私募金牛奖步骤/
+/公募金牛奖步骤/
+/分析师金牛奖客观评价步骤/
+/券商资管金牛奖步骤/
+/银行理财金牛奖步骤/
