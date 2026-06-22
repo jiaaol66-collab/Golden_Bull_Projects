@@ -1,0 +1,492 @@
+==2025-08-08 11:21:36.274639==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-08 11:21:36.275642==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-08 11:21:36.277641==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-08 11:21:36.278637==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-08 11:21:36.280637==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-08 11:21:36.281638==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-08 11:21:36.283638==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-08 11:21:36.284637==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2025-08-08 11:21:39.773445==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\test\test.xlsx
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\test\test2.xlsx
+==============================
+
+==2025-08-08 11:21:39.775434==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\test\test2.xlsx
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\test\test3.xlsx
+==============================
+
+==2025-08-11 10:18:01.314942==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 10:18:01.318943==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-11 10:18:01.319999==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 10:18:01.322513==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-11 10:18:01.323541==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 10:18:01.325540==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-11 10:18:01.327521==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 10:18:01.328518==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2025-08-11 11:19:09.712679==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 11:19:09.714532==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-11 11:19:09.718056==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 11:19:09.720052==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-11 11:19:09.722053==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 11:19:09.725053==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-08-11 11:19:09.726053==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2025-08-11 11:19:09.728052==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2025-09-12 15:07:06.712339==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-09-12 15:07:06.715916==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-09-12 15:07:06.717919==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-09-12 15:07:06.719918==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-09-12 15:07:06.721920==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-09-12 15:07:06.723919==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-09-12 15:07:06.725919==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2025-09-12 15:07:06.727919==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2025-10-30 12:20:45.928551==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 12:20:45.934015==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 12:20:45.936010==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 12:20:45.938006==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 12:20:45.941006==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 12:20:45.943006==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 12:20:45.945464==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 12:20:45.948176==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:15:20.438129==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:15:20.440104==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:15:20.442102==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:15:20.444128==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:15:20.445123==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:15:20.447104==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:15:20.449104==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:15:20.451102==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:16:41.631728==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:16:41.634232==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:16:41.635238==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:16:41.637238==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:16:41.639238==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:16:41.640238==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2025-10-30 13:16:41.642237==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\fillna_func.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2025-10-30 13:16:41.644238==
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\tools\tools.py
+          ---更新至----
+E:\近期待办\work\可持续金融研究中心\projects\工作流程包\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2026-02-03 20:28:01.430528==
+E:\work\SIDE\test1\tools\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-03 20:28:01.433010==
+E:\work\SIDE\test1\tools\tools.py
+          ---更新至----
+E:\work\SIDE\test1\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-02-03 20:28:01.435185==
+E:\work\SIDE\test1\tools\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-03 20:28:01.435185==
+E:\work\SIDE\test1\tools\tools.py
+          ---更新至----
+E:\work\SIDE\test1\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-02-03 20:28:01.435185==
+E:\work\SIDE\test1\tools\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-03 20:28:01.440265==
+E:\work\SIDE\test1\tools\tools.py
+          ---更新至----
+E:\work\SIDE\test1\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-02-03 20:28:01.440265==
+E:\work\SIDE\test1\tools\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-03 20:28:01.440265==
+E:\work\SIDE\test1\tools\tools.py
+          ---更新至----
+E:\work\SIDE\test1\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\test1\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\test1\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\test1\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\test1\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2026-02-04 15:42:14.735014==
+E:\work\SIDE\test1\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\test1\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
+==2026-06-04 09:18:29.573492==
+E:\work\SIDE\Golden_Bull_Projects\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\私募金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-06-04 09:18:29.574804==
+E:\work\SIDE\Golden_Bull_Projects\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\私募金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-06-04 09:18:29.575810==
+E:\work\SIDE\Golden_Bull_Projects\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\券商资管金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-06-04 09:18:29.577834==
+E:\work\SIDE\Golden_Bull_Projects\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\券商资管金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-06-04 09:18:29.578829==
+E:\work\SIDE\Golden_Bull_Projects\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\银行理财金牛奖步骤\userlib\fillna_func.py
+==============================
+
+==2026-06-04 09:18:29.578829==
+E:\work\SIDE\Golden_Bull_Projects\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\银行理财金牛奖步骤\userlib\tools.py
+==============================
+
+==2026-06-04 09:18:29.579808==
+E:\work\SIDE\Golden_Bull_Projects\userlib\fillna_func.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\分析师金牛奖客观评价步骤\userlib\fillna_func.py
+==============================
+
+==2026-06-04 09:18:29.580808==
+E:\work\SIDE\Golden_Bull_Projects\userlib\tools.py
+          ---更新至----
+E:\work\SIDE\Golden_Bull_Projects\分析师金牛奖客观评价步骤\userlib\tools.py
+==============================
+
