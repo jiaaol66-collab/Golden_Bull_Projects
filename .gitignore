@@ -30,6 +30,8 @@ _log/
 # Docs
 DB_README.md
 debug-*.md
+*.xlsx
+*.csv
 
 # Local temp markers
 *in-processing*
