@@ -5,9 +5,32 @@ import numpy as np
 from datetime import datetime, timedelta
 
 
+def create_stage_progress(total, desc):
+    return tqdm(total=max(0, int(total or 0)), desc=desc, unit='stage', leave=True, dynamic_ncols=True)
+
+
+def advance_stage_progress(progress, item_label, stage_label):
+    if progress is None:
+        return
+    item_text = str(item_label or '').strip()
+    stage_text = str(stage_label or '').strip()
+    desc_text = str(getattr(progress, 'desc', '') or '').strip().rstrip(':').strip()
+    if item_text and desc_text == item_text:
+        item_text = ''
+    if item_text and stage_text:
+        progress.set_postfix_str(f'{item_text} | {stage_text}')
+    elif stage_text:
+        progress.set_postfix_str(stage_text)
+    elif item_text:
+        progress.set_postfix_str(item_text)
+    progress.update(1)
+
+
 def get_period_net_value(df, last_trading_days, freq, all_products, invariant, code):
-    df['净值日期'] = pd.to_datetime(df['净值日期'])
-    last_trading_days = [pd.Timestamp(d) for d in last_trading_days]
+    df = df.copy()
+    df['净值日期'] = pd.to_datetime(df['净值日期'], errors='coerce')
+    target_dates = pd.to_datetime(pd.Series(list(last_trading_days)), errors='coerce').dropna()
+    target_dates = target_dates.drop_duplicates().sort_values().reset_index(drop=True)
     if invariant == ['产品编号', '产品名称', '产品策略', '子策略', '跟踪指数']:
         n = m = 10
     else:
@@ -52,65 +75,140 @@ def get_period_net_value(df, last_trading_days, freq, all_products, invariant, c
     base_cols = invariant
     all_products = all_products.drop_duplicates(code)
 
-    # 创建完整网格
-    full_grid = pd.MultiIndex.from_product(
-        [all_products[code], last_trading_days],
-        names=[code, '净值日期']
-    ).to_frame(index=False)
-
-    result = full_grid.merge(
-        all_products[base_cols],
-        on=code,
-        how='left'
-    )
-
-    # 初始化列
-    # result['净值编号'] = None
-    result[cfg['unit_col']] = None
-    result[cfg['accum_col']] = None
-    result['原始净值日期'] = pd.NaT
-
-    # 预处理净值数据
-    df = df.sort_values('净值日期')
-    product_groups = {}
-    for prod_id, group in df.groupby(code):
-        # 保证每个日期只有一条记录（取最新记录）
-        product_groups[prod_id] = (
-            group
-            .drop_duplicates('净值日期', keep='last')
-            .set_index('净值日期')
+    product_codes = all_products[code].drop_duplicates().to_numpy()
+    target_np = target_dates.to_numpy()
+    if len(product_codes) == 0 or len(target_np) == 0:
+        full_grid = pd.DataFrame({code: product_codes, '净值日期': pd.to_datetime([])})
+    else:
+        full_grid = pd.DataFrame(
+            {
+                code: np.repeat(product_codes, len(target_np)),
+                '净值日期': np.tile(target_np, len(product_codes)),
+            }
         )
 
-    # 优化后的查找逻辑
-    for idx, row in tqdm(result.iterrows(), total=len(result), desc=cfg['desc']):
-        product_id = row[code]
-        target_date = row['净值日期']
+    result = full_grid.merge(all_products[base_cols], on=code, how='left')
 
-        if product_id not in product_groups:
-            continue
+    keep_cols = [code, '净值日期', '单位净值', '累计净值']
+    if '净值编号' in df.columns:
+        keep_cols.append('净值编号')
+    keep_cols = [c for c in keep_cols if c in df.columns]
+    df = df[keep_cols].sort_values(['净值日期'])
+    if code in df.columns:
+        df = df.drop_duplicates([code, '净值日期'], keep='last')
+    else:
+        df = df.drop_duplicates(['净值日期'], keep='last')
 
-        prod_df = product_groups[product_id]
-        start_date, end_date = cfg['date_range'](target_date)
+    picked = pd.DataFrame()
 
-        # 获取日期范围内的净值
-        period_data = prod_df.loc[
-            (prod_df.index >= start_date) &
-            (prod_df.index <= end_date)
-            ]
+    if freq == 'daily':
+        if len(df) and len(target_dates):
+            daily = df.copy()
+            daily['原始净值日期'] = daily['净值日期']
+            daily = daily.rename(
+                columns={
+                    '单位净值': cfg['unit_col'],
+                    '累计净值': cfg['accum_col'],
+                }
+            )
+            pick_cols = [code, '净值日期', '原始净值日期', cfg['unit_col'], cfg['accum_col']]
+            if '净值编号' in daily.columns:
+                pick_cols.append('净值编号')
+            picked = daily[pick_cols]
 
-        if period_data.empty:
-            continue
+    elif freq == 'weekly':
+        if len(df) and len(target_dates):
+            nav = df.copy()
+            nav['_wkstart'] = nav['净值日期'] - pd.to_timedelta(nav['净值日期'].dt.weekday, unit='D')
+            cal = pd.DataFrame({'target_date': target_dates})
+            cal['_wkstart'] = cal['target_date'] - pd.to_timedelta(cal['target_date'].dt.weekday, unit='D')
+            cal = cal.drop_duplicates(['_wkstart'], keep='last')
+            merged = nav.merge(cal, on='_wkstart', how='inner')
+            if len(merged):
+                merged['abs_diff'] = (merged['净值日期'] - merged['target_date']).abs()
+                merged = merged.sort_values([code, 'target_date', 'abs_diff', '净值日期'], ascending=True)
+                merged = merged.drop_duplicates([code, 'target_date'], keep='first')
+                merged = merged.rename(
+                    columns={
+                        'target_date': '净值日期',
+                        '净值日期': '原始净值日期',
+                        '单位净值': cfg['unit_col'],
+                        '累计净值': cfg['accum_col'],
+                    }
+                )
+                pick_cols = [code, '净值日期', '原始净值日期', cfg['unit_col'], cfg['accum_col']]
+                if '净值编号' in merged.columns:
+                    pick_cols.append('净值编号')
+                picked = merged[pick_cols]
 
-        # 使用配置的最近日期查找方法
-        nearest_date = cfg['get_nearest_date'](period_data.index, target_date)
-        nearest_row = prod_df.loc[nearest_date]
+    elif freq == 'monthly':
+        if len(df) and len(target_dates):
+            targets = target_dates.reset_index(drop=True)
+            starts = targets - pd.Timedelta(days=int(n))
+            ends = targets + pd.Timedelta(days=int(m))
+            overlap = False
+            if len(targets) > 1:
+                overlap = bool((starts.iloc[1:].reset_index(drop=True) <= ends.iloc[:-1].reset_index(drop=True)).any())
 
-        # 填充数据
-        if '净值编号' in nearest_row.index:
-            result.at[idx, '净值编号'] = nearest_row.get('净值编号')
-        result.at[idx, cfg['unit_col']] = nearest_row.get('单位净值')
-        result.at[idx, cfg['accum_col']] = nearest_row.get('累计净值')
-        result.at[idx, '原始净值日期'] = nearest_date
+            nav = df.copy()
+            if not overlap:
+                intervals = pd.IntervalIndex.from_arrays(starts, ends, closed='both')
+                hit = intervals.get_indexer(nav['净值日期'])
+                keep_mask = hit >= 0
+                if keep_mask.any():
+                    nav = nav.loc[keep_mask].copy()
+                    nav['target_date'] = targets.to_numpy()[hit[keep_mask]]
+                    nav['abs_diff'] = (nav['净值日期'] - nav['target_date']).abs()
+                    nav = nav.sort_values([code, 'target_date', 'abs_diff', '净值日期'], ascending=True)
+                    nav = nav.drop_duplicates([code, 'target_date'], keep='first')
+                    nav = nav.rename(
+                        columns={
+                            'target_date': '净值日期',
+                            '净值日期': '原始净值日期',
+                            '单位净值': cfg['unit_col'],
+                            '累计净值': cfg['accum_col'],
+                        }
+                    )
+                    pick_cols = [code, '净值日期', '原始净值日期', cfg['unit_col'], cfg['accum_col']]
+                    if '净值编号' in nav.columns:
+                        pick_cols.append('净值编号')
+                    picked = nav[pick_cols]
+            else:
+                nav_dates = nav['净值日期']
+                parts = []
+                for t, s, e in zip(targets.to_list(), starts.to_list(), ends.to_list()):
+                    mask = (nav_dates >= s) & (nav_dates <= e)
+                    if not mask.any():
+                        continue
+                    chunk = nav.loc[mask].copy()
+                    chunk['target_date'] = t
+                    chunk['abs_diff'] = (chunk['净值日期'] - chunk['target_date']).abs()
+                    parts.append(chunk)
+                if parts:
+                    merged = pd.concat(parts, ignore_index=True)
+                    merged = merged.sort_values([code, 'target_date', 'abs_diff', '净值日期'], ascending=True)
+                    merged = merged.drop_duplicates([code, 'target_date'], keep='first')
+                    merged = merged.rename(
+                        columns={
+                            'target_date': '净值日期',
+                            '净值日期': '原始净值日期',
+                            '单位净值': cfg['unit_col'],
+                            '累计净值': cfg['accum_col'],
+                        }
+                    )
+                    pick_cols = [code, '净值日期', '原始净值日期', cfg['unit_col'], cfg['accum_col']]
+                    if '净值编号' in merged.columns:
+                        pick_cols.append('净值编号')
+                    picked = merged[pick_cols]
+
+    if not picked.empty:
+        result = result.merge(picked, on=[code, '净值日期'], how='left')
+    else:
+        result[cfg['unit_col']] = np.nan
+        result[cfg['accum_col']] = np.nan
+        result['原始净值日期'] = pd.NaT
+        if '净值编号' in df.columns and '净值编号' not in result.columns:
+            result['净值编号'] = np.nan
 
     return result
 

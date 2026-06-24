@@ -2232,23 +2232,15 @@ class WorkspaceUIMixin:
         return folders
 
     def get_database_path(self, manifest):
-        workspace_root = manifest["workspace_root"]
-        candidate_root = os.path.join(os.path.dirname(workspace_root), "数据库")
-        db_files = []
-        if os.path.isdir(candidate_root):
-            for root, _, files in os.walk(candidate_root):
-                for name in files:
-                    if name.lower().endswith(".duckdb"):
-                        abs_path = os.path.join(root, name)
-                        try:
-                            mtime = os.path.getmtime(abs_path)
-                        except OSError:
-                            mtime = 0
-                        db_files.append((mtime, abs_path))
-        if not db_files:
+        workspace_root = str((manifest or {}).get("workspace_root", "") or "").strip()
+        if not workspace_root:
             return ""
-        db_files.sort(reverse=True)
-        return db_files[0][1]
+        workspace_name = os.path.basename(workspace_root)
+        year_text = self.get_workspace_year(workspace_name)
+        if not year_text or year_text == "未识别":
+            return ""
+        db_path = os.path.join(os.path.dirname(workspace_root), "数据库", str(year_text), "DB_PRIVATE.duckdb")
+        return db_path if os.path.isfile(db_path) else ""
 
     def get_database_tables(self, db_path, limit=16):
         if not duckdb or not db_path or not os.path.isfile(db_path):
@@ -2312,7 +2304,7 @@ class WorkspaceUIMixin:
         db_path = self.get_database_path(tab_data["manifest"])
         if not db_path:
             tab_data["db_result_title"] = title
-            tab_data["db_result_text"] = "未找到可用的 DuckDB 数据库文件。"
+            tab_data["db_result_text"] = "当前年份数据库缺失，待入库。"
             self.render_database_panel(tab_id)
             return
         tab_data["db_result_title"] = title
@@ -2557,6 +2549,7 @@ class WorkspaceUIMixin:
         db_card = ctk.CTkFrame(right_panel, **panel_card_style())
         db_card.pack(fill="x", padx=10, pady=(0, 10))
         ctk.CTkLabel(db_card, text="当前数据库", text_color=TEXT_PRIMARY, font=ui_font(15, "bold")).pack(anchor="w", padx=10, pady=(10, 6))
+        workspace_year = self.get_workspace_year(os.path.basename(manifest.get("workspace_root", "")))
         if db_path:
             ctk.CTkLabel(db_card, text=db_path, text_color=TEXT_MUTED, wraplength=WRAP_PANEL_MD, justify="left").pack(anchor="w", padx=10)
             btn_row = ctk.CTkFrame(db_card, fg_color="transparent")
@@ -2578,7 +2571,10 @@ class WorkspaceUIMixin:
                 **button_secondary_style(),
             ).pack(side="left")
         else:
-            ctk.CTkLabel(db_card, text="未找到当前工作区对应的 DuckDB 文件。", text_color=DANGER).pack(anchor="w", padx=10, pady=(0, 10))
+            hint = "当前年份数据库缺失，待入库。"
+            if workspace_year and workspace_year != "未识别":
+                hint = f"未找到 {workspace_year} 年数据库，当前状态：缺失待入库。"
+            ctk.CTkLabel(db_card, text=hint, text_color=DANGER, wraplength=WRAP_PANEL_MD, justify="left").pack(anchor="w", padx=10, pady=(0, 10))
 
         table_card = ctk.CTkFrame(right_panel, **panel_card_style())
         table_card.pack(fill="x", padx=10, pady=(0, 10))

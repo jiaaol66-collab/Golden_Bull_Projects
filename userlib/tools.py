@@ -123,6 +123,10 @@ def make_dir(path, silence=0):
             print(f'{path}已存在，不进行创建..')
 
 def find_rel(src, target):
+    """ 找到src下的target的相对路径
+    :param src: 源路径
+    :param target: 目标路径
+    :return: 相对路径"""
     return os.path.relpath(find_info(target, src, 10), get_path(1, src)['n'])+'/'
 
 
@@ -406,6 +410,29 @@ def custom_input_dialog(title, fields):
     """
     更新后的现代化输入对话框 (CustomTkinter版)
     """
+    init_flag = str(os.getenv("GB_INIT_FROM_TERMINAL", "")).strip()
+    init_year = str(os.getenv("GB_INIT_YEAR", "")).strip()
+    if init_flag == "1" and init_year:
+        auto_values = {}
+        can_auto = True
+        for config in fields:
+            label = str(config.get("label", "")).strip()
+            validate_func = config.get("validate")
+            value = config.get("default", "")
+            if "年份" in label:
+                value = init_year
+            value = "" if value is None else str(value)
+            if value == "":
+                can_auto = False
+                break
+            if callable(validate_func):
+                is_valid, _msg = validate_func(value)
+                if not is_valid:
+                    can_auto = False
+                    break
+            auto_values[label] = value
+        if can_auto and auto_values:
+            return auto_values
     root = get_root()
     dialog = ctk.CTkToplevel(root)
     dialog.attributes('-topmost', True)

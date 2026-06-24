@@ -13,7 +13,16 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 from openpyxl import load_workbook
-from award_config import AWARD_FOLDER_MAP, get_award_folder, get_award_labels, get_manifest_award
+from award_config import (
+    AWARD_FOLDER_MAP,
+    get_award_config_file,
+    get_award_config_label,
+    get_award_folder,
+    get_award_labels,
+    get_manifest_award,
+    has_award_config,
+)
+from config_editor import ConfigEditorWindow
 from pipeline_gantt import PipelineGanttMixin
 from workspace_ui import WorkspaceUIMixin
 from style_config import *
@@ -21,6 +30,8 @@ import motion
 from userlib.tools import custom_dialog
 
 # ================= 底层解析器逻辑 =================
+LOG_AUTO_FOLLOW_IDLE_MS = 3000
+
 def _clean(v):
     if v is None: return ""
     s = str(v).strip()
@@ -35,6 +46,15 @@ def _step_folder(step, folder):
     if not folder: return ""
     if _is_step_id(step): return f"step_{_clean(step)} {folder}"
     return folder
+
+
+def _quote_cli_arg(value):
+    text = str(value)
+    if not text:
+        return '""'
+    if re.search(r'[\s"]', text):
+        return '"' + text.replace('"', '\\"') + '"'
+    return text
 
 def _rel_dir(folder, *subs):
     parts = [folder] + [_clean(s) for s in subs]
@@ -428,6 +448,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.sidebar_unassigned_option_label = "未指定"
         self.sidebar_dataset_var = ctk.StringVar(value="未识别")
         self.sidebar_rule_var = ctk.StringVar(value="未识别")
+        self.sidebar_initialize_context = {"active": False, "award": "", "year": "", "armed_at": 0.0}
+        self.config_editor_window = None
         
         if not os.path.exists("logs"):
             os.makedirs("logs")
@@ -587,8 +609,27 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             **button_primary_style(),
         ).pack(fill="x", padx=20, pady=(0, 20))
 
-        sidebar_resource_card = ctk.CTkFrame(self.sidebar, **panel_card_style())
-        sidebar_resource_card.pack(fill="x", padx=20, pady=(0, 16))
+        ctk.CTkButton(
+            self.sidebar,
+            text="初始化",
+            command=self.on_sidebar_initialize_click,
+            corner_radius=RADIUS_MD,
+            height=HEIGHT_BUTTON,
+            font=ui_font(14, "bold"),
+            fg_color="#000000",
+            hover_color="#1a1a1a",
+            text_color="#ffffff",
+        ).pack(fill="x", padx=20, pady=(0, 14))
+
+        self.sidebar_scroll_area = ctk.CTkScrollableFrame(
+            self.sidebar,
+            fg_color="transparent",
+            corner_radius=RADIUS_NONE,
+        )
+        self.sidebar_scroll_area.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+
+        sidebar_resource_card = ctk.CTkFrame(self.sidebar_scroll_area, **panel_card_style())
+        sidebar_resource_card.pack(fill="x", padx=4, pady=(0, 12))
         ctk.CTkLabel(
             sidebar_resource_card,
             text="资料浏览",
@@ -639,6 +680,130 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             font=sidebar_hint_font,
             **button_primary_style(),
         ).pack(fill="x", padx=8, pady=(0, 8))
+
+        sidebar_db_card = ctk.CTkFrame(self.sidebar_scroll_area, **panel_card_style())
+        sidebar_db_card.pack(fill="x", padx=4, pady=(0, 12))
+        ctk.CTkLabel(
+            sidebar_db_card,
+            text="数据库维护",
+            text_color=TEXT_PRIMARY,
+            font=ui_font(13, "bold"),
+        ).pack(anchor="w", padx=8, pady=(8, 1))
+        ctk.CTkLabel(
+            sidebar_db_card,
+            text="按当前奖项与年份执行删库和入库，不从工作区内授权。",
+            text_color=TEXT_MUTED,
+            font=sidebar_hint_font,
+            wraplength=138,
+            justify="left",
+        ).pack(anchor="w", padx=8, pady=(0, 6))
+        sidebar_db_btn_row = ctk.CTkFrame(sidebar_db_card, fg_color="transparent")
+        sidebar_db_btn_row.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkButton(
+            sidebar_db_btn_row,
+            text="删旧库",
+            command=self.on_sidebar_delete_database_click,
+            corner_radius=RADIUS_MD,
+            height=sidebar_compact_button_height,
+            font=sidebar_hint_font,
+            width=70,
+            **button_warning_style(),
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(
+            sidebar_db_btn_row,
+            text="数据入库",
+            command=self.on_sidebar_data_ingestion_click,
+            corner_radius=RADIUS_MD,
+            height=sidebar_compact_button_height,
+            font=sidebar_hint_font,
+            width=70,
+            **button_primary_style(),
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        self.sidebar_config_card = ctk.CTkFrame(self.sidebar_scroll_area, **panel_card_style())
+        self.sidebar_config_card.pack(fill="x", padx=4, pady=(0, 12))
+        ctk.CTkLabel(
+            self.sidebar_config_card,
+            text="配置文件",
+            text_color=TEXT_PRIMARY,
+            font=ui_font(13, "bold"),
+        ).pack(anchor="w", padx=8, pady=(8, 1))
+        ctk.CTkLabel(
+            self.sidebar_config_card,
+            text="数据库下方的配置入口；支持弹出编辑界面和 JSON 导入。",
+            text_color=TEXT_MUTED,
+            font=sidebar_hint_font,
+            wraplength=138,
+            justify="left",
+        ).pack(anchor="w", padx=8, pady=(0, 6))
+        self.sidebar_config_status_label = ctk.CTkLabel(
+            self.sidebar_config_card,
+            text="当前奖项暂未接入配置文件",
+            text_color=TEXT_MUTED,
+            font=sidebar_hint_font,
+            wraplength=138,
+            justify="left",
+        )
+        self.sidebar_config_status_label.pack(anchor="w", padx=8, pady=(0, 4))
+        self.sidebar_config_json_label = ctk.CTkLabel(
+            self.sidebar_config_card,
+            text="JSON: 未选择",
+            text_color=TEXT_MUTED,
+            font=sidebar_hint_font,
+            wraplength=138,
+            justify="left",
+        )
+        self.sidebar_config_json_label.pack(anchor="w", padx=8, pady=(0, 8))
+
+        sidebar_config_btn_row_1 = ctk.CTkFrame(self.sidebar_config_card, fg_color="transparent")
+        sidebar_config_btn_row_1.pack(fill="x", padx=8, pady=(0, 6))
+        self.sidebar_open_config_editor_btn = ctk.CTkButton(
+            sidebar_config_btn_row_1,
+            text="打开配置界面",
+            command=self.open_sidebar_config_editor,
+            corner_radius=RADIUS_MD,
+            height=sidebar_compact_button_height,
+            font=sidebar_hint_font,
+            width=70,
+            **button_primary_style(),
+        )
+        self.sidebar_open_config_editor_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.sidebar_open_config_file_btn = ctk.CTkButton(
+            sidebar_config_btn_row_1,
+            text="打开配置文件",
+            command=self.open_sidebar_config_file,
+            corner_radius=RADIUS_MD,
+            height=sidebar_compact_button_height,
+            font=sidebar_hint_font,
+            width=70,
+            **button_secondary_style(),
+        )
+        self.sidebar_open_config_file_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        sidebar_config_btn_row_2 = ctk.CTkFrame(self.sidebar_config_card, fg_color="transparent")
+        sidebar_config_btn_row_2.pack(fill="x", padx=8, pady=(0, 8))
+        self.sidebar_select_config_json_btn = ctk.CTkButton(
+            sidebar_config_btn_row_2,
+            text="选择 JSON",
+            command=self.browse_sidebar_config_json,
+            corner_radius=RADIUS_MD,
+            height=sidebar_compact_button_height,
+            font=sidebar_hint_font,
+            width=70,
+            **button_secondary_style(),
+        )
+        self.sidebar_select_config_json_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.sidebar_apply_config_json_btn = ctk.CTkButton(
+            sidebar_config_btn_row_2,
+            text="应用 JSON",
+            command=self.apply_sidebar_config_json,
+            corner_radius=RADIUS_MD,
+            height=sidebar_compact_button_height,
+            font=sidebar_hint_font,
+            width=70,
+            **button_soft_style(),
+        )
+        self.sidebar_apply_config_json_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
         
         self.update_year_menu(self.award_menu.get())
 
@@ -780,6 +945,90 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             return ""
         return os.path.normpath(os.path.abspath(folder))
 
+    def get_sidebar_award_config_path(self, award_name):
+        return get_award_config_file(award_name, project_root=os.path.dirname(os.path.abspath(__file__)))
+
+    def get_sidebar_award_config_label(self, award_name):
+        return get_award_config_label(award_name) or "配置文件"
+
+    def has_sidebar_award_config(self, award_name):
+        return has_award_config(award_name, project_root=os.path.dirname(os.path.abspath(__file__)))
+
+    def clear_sidebar_initialize_context(self):
+        self.sidebar_initialize_context = {"active": False, "award": "", "year": "", "armed_at": 0.0}
+
+    def get_award_initialize_script_path(self, award_root):
+        award_root = _clean(award_root)
+        if not award_root or not os.path.isdir(award_root):
+            return ""
+        candidate = os.path.join(award_root, "initialize.py")
+        if os.path.isfile(candidate):
+            return candidate
+        return ""
+
+    def on_sidebar_initialize_click(self):
+        award_name = self.award_menu.get()
+        year_text = _clean(self.year_menu.get())
+        award_root = self.get_sidebar_award_root(award_name)
+        if not award_root or not year_text or year_text == "无可用年份":
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return
+        script_path = self.get_award_initialize_script_path(award_root)
+        if not script_path:
+            messagebox.showwarning("未找到初始化脚本", f"未在奖项根目录找到 initialize.py：\n{award_root}")
+            return
+        self.sidebar_initialize_context = {"active": True, "award": award_name, "year": year_text, "armed_at": time.time()}
+        threading.Thread(
+            target=self._run_award_initialize_worker,
+            args=(award_root, script_path, award_name, year_text),
+            daemon=True,
+        ).start()
+
+    def _run_award_initialize_worker(self, award_root, script_path, award_name, year_text):
+        ok = False
+        detail = ""
+        try:
+            result = subprocess.run(
+                [sys.executable, script_path],
+                cwd=award_root,
+                capture_output=True,
+                text=True,
+                env=os.environ.copy(),
+            )
+            ok = result.returncode == 0
+            detail = (result.stdout or "").strip() or (result.stderr or "").strip()
+        except Exception as exc:
+            ok = False
+            detail = str(exc)
+        self.safe_after(0, self._after_award_initialize_worker, ok, award_name, year_text, script_path, detail)
+
+    def summarize_initialize_output(self, detail, ok=True):
+        lines = [line.strip() for line in str(detail or "").splitlines() if line.strip()]
+        if not lines or ok:
+            return ""
+        priority_keywords = ("error", "exception", "failed", "失败", "异常", "报错", "traceback")
+        key_lines = [line for line in lines if any(keyword in line.lower() for keyword in priority_keywords)]
+        picked = key_lines[:3] if key_lines else lines[-3:]
+        return "\n".join(picked[:3])
+
+    def _after_award_initialize_worker(self, ok, award_name, year_text, script_path, detail):
+        title = "初始化完成" if ok else "初始化失败"
+        script_name = os.path.basename(script_path)
+        msg = f"{award_name} · {year_text}\n脚本: {script_name}"
+        summary = self.summarize_initialize_output(detail, ok=ok)
+        if summary:
+            msg = f"{msg}\n\n关键信息:\n{summary}"
+        if not ok:
+            self.clear_sidebar_initialize_context()
+        else:
+            current_workspace = self.resolve_workspace_menu_selection(award_name, year_text)
+            self.award_menu.set(award_name)
+            self.update_year_menu(award_name, selected_year=year_text, selected_workspace=current_workspace)
+        if ok:
+            messagebox.showinfo(title, msg)
+        else:
+            messagebox.showerror(title, msg)
+
     def get_award_resource_config_path(self, award_name):
         award_root = self.get_sidebar_award_root(award_name)
         if not award_root:
@@ -808,7 +1057,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
 
     def save_award_year_fixed_resource(self, award_name, selected_year, resource_key, path):
         year_text = _clean(selected_year)
-        if not award_name or not year_text or resource_key not in {"dataset_path", "rule_path"}:
+        if not award_name or not year_text or resource_key not in {"dataset_path", "rule_path", "config_json_path"}:
             return
         config = self.load_award_resource_config(award_name)
         years = config.get("years")
@@ -837,10 +1086,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         year_payload = years.get(year_text)
         if not isinstance(year_payload, dict):
             year_payload = {}
-        keys = resource_keys or ["dataset_path", "rule_path"]
+        keys = resource_keys or ["dataset_path", "rule_path", "config_json_path"]
         for key in keys:
             year_payload.pop(key, None)
-        if any(_clean(year_payload.get(key)) for key in ("dataset_path", "rule_path")):
+        if any(_clean(year_payload.get(key)) for key in ("dataset_path", "rule_path", "config_json_path")):
             year_payload["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             years[year_text] = year_payload
         else:
@@ -849,6 +1098,141 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         config["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
         config["years"] = years
         self.save_award_resource_config(award_name, config)
+
+    def refresh_sidebar_config_browser(self, selected_award=None, selected_year=None):
+        award_name = selected_award or self.award_menu.get()
+        year_text = _clean(selected_year or self.year_menu.get())
+        valid_year = bool(year_text and year_text != "无可用年份")
+        config_label = self.get_sidebar_award_config_label(award_name)
+        config_path = self.get_sidebar_award_config_path(award_name)
+        fixed_resources = self.get_award_year_fixed_resources(award_name, year_text) if valid_year else {}
+        config_json_path = _clean(fixed_resources.get("config_json_path"))
+
+        has_mapping = bool(config_path)
+        config_exists = bool(config_path and os.path.isfile(config_path))
+        if not has_mapping:
+            status_text = "当前奖项暂未接入配置文件"
+        elif not config_exists:
+            status_text = f"{config_label}\n未找到: {config_path}"
+        else:
+            status_text = f"{config_label}\n{os.path.relpath(config_path, os.path.dirname(os.path.abspath(__file__)))}"
+        self.sidebar_config_status_label.configure(text=status_text)
+
+        if config_json_path and os.path.isfile(config_json_path):
+            json_text = f"JSON: {os.path.basename(config_json_path)}"
+        elif config_json_path:
+            json_text = f"JSON: 路径失效\n{config_json_path}"
+        else:
+            json_text = "JSON: 未选择"
+        self.sidebar_config_json_label.configure(text=json_text)
+
+        editor_state = "normal" if (valid_year and config_exists) else "disabled"
+        file_state = "normal" if config_exists else "disabled"
+        json_state = "normal" if (valid_year and has_mapping) else "disabled"
+        apply_state = "normal" if (valid_year and config_exists and config_json_path and os.path.isfile(config_json_path)) else "disabled"
+        self.sidebar_open_config_editor_btn.configure(state=editor_state)
+        self.sidebar_open_config_file_btn.configure(state=file_state)
+        self.sidebar_select_config_json_btn.configure(state=json_state)
+        self.sidebar_apply_config_json_btn.configure(state=apply_state)
+
+    def browse_sidebar_config_json(self):
+        award_name = self.award_menu.get()
+        year_text = _clean(self.year_menu.get())
+        config_path = self.get_sidebar_award_config_path(award_name)
+        if not award_name or not year_text or year_text == "无可用年份":
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return ""
+        initial_dir = os.path.dirname(config_path) if config_path and os.path.isfile(config_path) else os.path.dirname(os.path.abspath(__file__))
+        selected_path = filedialog.askopenfilename(
+            parent=self,
+            title=f"选择 {award_name} {year_text} 的配置 JSON",
+            initialdir=initial_dir,
+            filetypes=[
+                ("JSON 文件", "*.json"),
+                ("文本文件", "*.txt"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if not selected_path:
+            return ""
+        selected_path = os.path.normpath(os.path.abspath(selected_path))
+        if not os.path.isfile(selected_path):
+            messagebox.showwarning("提示", f"所选路径不是文件:\n{selected_path}")
+            return ""
+        self.save_award_year_fixed_resource(award_name, year_text, "config_json_path", selected_path)
+        self.refresh_sidebar_config_browser(award_name, year_text)
+        return selected_path
+
+    def _ensure_sidebar_config_editor(self, award_name, year_text):
+        config_path = self.get_sidebar_award_config_path(award_name)
+        normalized_year = _clean(year_text)
+        if not config_path:
+            messagebox.showinfo("提示", f"{award_name} 暂未配置映射文件。")
+            return None
+        if not os.path.isfile(config_path):
+            messagebox.showwarning("未找到配置文件", f"未找到配置文件:\n{config_path}")
+            return None
+        if self.config_editor_window and self.config_editor_window.winfo_exists():
+            try:
+                same_file = os.path.normcase(self.config_editor_window.config_file_path) == os.path.normcase(os.path.normpath(config_path))
+                same_year = _clean(getattr(self.config_editor_window, "year_text", "")) == normalized_year
+                if same_file and same_year:
+                    self.config_editor_window.focus()
+                    self.config_editor_window.lift()
+                    return self.config_editor_window
+                self.config_editor_window.destroy()
+            except Exception:
+                self.config_editor_window = None
+            self.config_editor_window = None
+        try:
+            self.config_editor_window = ConfigEditorWindow(
+                self,
+                award_name=award_name,
+                year_text=normalized_year,
+                config_file_path=config_path,
+                config_label=self.get_sidebar_award_config_label(award_name),
+                on_saved=lambda _path: self.refresh_sidebar_config_browser(award_name, normalized_year),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开配置界面失败", str(exc))
+            self.config_editor_window = None
+            return None
+        return self.config_editor_window
+
+    def open_sidebar_config_editor(self):
+        award_name = self.award_menu.get()
+        year_text = _clean(self.year_menu.get())
+        if not award_name or not year_text or year_text == "无可用年份":
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return
+        self._ensure_sidebar_config_editor(award_name, year_text)
+
+    def apply_sidebar_config_json(self):
+        award_name = self.award_menu.get()
+        year_text = _clean(self.year_menu.get())
+        if not award_name or not year_text or year_text == "无可用年份":
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return
+        fixed_resources = self.get_award_year_fixed_resources(award_name, year_text)
+        json_path = _clean(fixed_resources.get("config_json_path"))
+        if not json_path:
+            messagebox.showinfo("提示", "请先选择一个 JSON 文件。")
+            return
+        editor = self._ensure_sidebar_config_editor(award_name, year_text)
+        if not editor:
+            return
+        editor.load_json_file(json_path)
+
+    def open_sidebar_config_file(self):
+        award_name = self.award_menu.get()
+        config_path = self.get_sidebar_award_config_path(award_name)
+        if not config_path or not os.path.isfile(config_path):
+            messagebox.showwarning("未找到配置文件", f"未找到配置文件:\n{config_path}")
+            return
+        try:
+            self.open_file(config_path)
+        except Exception as exc:
+            messagebox.showerror("打开配置文件失败", str(exc))
 
     def _find_sidebar_display_label_by_path(self, display_map, path):
         target = os.path.normcase(os.path.normpath(path))
@@ -1066,6 +1450,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             if current_rule in rule_map or current_rule == self.sidebar_unassigned_option_label
             else (preferred_rule_label or fixed_rule_label or custom_rule_label or self.sidebar_unassigned_option_label)
         )
+        self.refresh_sidebar_config_browser(award_name, year_text)
 
     def browse_sidebar_dataset(self):
         award_name = self.award_menu.get()
@@ -1491,8 +1876,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         return display_map.get(selected_label, selected_label)
 
     def on_year_menu_change(self, selected_year):
+        self.clear_sidebar_initialize_context()
         self.update_workspace_menu(self.award_menu.get(), selected_year)
         self.refresh_sidebar_resource_browser(self.award_menu.get(), selected_year)
+        self.refresh_sidebar_config_browser(self.award_menu.get(), selected_year)
 
     def prompt_display_name(self, title, prompt, initial_value="", allow_empty=True):
         try:
@@ -1592,6 +1979,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.log_msg(tab_id, f"检测到 {os.path.basename(step_info.get('rel_path', step_info.get('script_name', 'test.py')))} 执行完成，已刷新终端工作区列表。")
 
     def update_year_menu(self, selected_award, selected_year="", selected_workspace=""):
+        self.clear_sidebar_initialize_context()
         years = self.scan_workspace_years(selected_award)
         self.year_menu_values[selected_award] = list(years)
         if years:
@@ -1600,12 +1988,14 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             self.year_menu.set(target_year)
             self.update_workspace_menu(selected_award, target_year, selected_workspace=selected_workspace)
             self.refresh_sidebar_resource_browser(selected_award, target_year)
+            self.refresh_sidebar_config_browser(selected_award, target_year)
         else:
             self.year_menu.configure(values=["无可用年份"])
             self.year_menu.set("无可用年份")
             self.workspace_menu.configure(values=["无可用工作区"])
             self.workspace_menu.set("无可用工作区")
             self.refresh_sidebar_resource_browser(selected_award, "")
+            self.refresh_sidebar_config_browser(selected_award, "")
 
     def update_workspace_menu(self, selected_award, selected_year="", selected_workspace=""):
         workspaces, display_map, reverse_map = self.build_workspace_menu_state(selected_award, selected_year)
@@ -1677,6 +2067,167 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
     def has_institution_txt(self, manifest=None, award="", ws_name=""):
         txt_path = self.get_institution_txt_path(manifest=manifest, award=award, ws_name=ws_name)
         return bool(txt_path and os.path.isfile(txt_path))
+
+    def get_sidebar_selected_year_int(self):
+        year_text = _clean(self.year_menu.get())
+        if not year_text or year_text == "无可用年份":
+            return None
+        match = re.search(r"\b(20\d{2})\b", year_text)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def get_award_year_database_path(self, award_name, year_value):
+        award_root = self.get_sidebar_award_root(award_name)
+        if not award_root or not year_value:
+            return ""
+        return os.path.join(award_root, "数据库", str(year_value), "DB_PRIVATE.duckdb")
+
+    def get_award_data_ingestion_script_path(self, award_name):
+        award_root = self.get_sidebar_award_root(award_name)
+        if not award_root:
+            return ""
+        path = os.path.join(award_root, "data_ingestion.py")
+        return path if os.path.isfile(path) else ""
+
+    def choose_sidebar_ingestion_source_file(self, award_name, year_value):
+        award_root = self.get_sidebar_award_root(award_name)
+        if not award_root:
+            return ""
+        initial_dir = os.path.join(award_root, "原始数据集", str(year_value)) if year_value else award_root
+        if not os.path.isdir(initial_dir):
+            initial_dir = award_root
+        selected_path = filedialog.askopenfilename(
+            parent=self,
+            title=f"选择用于入库的 Excel 文件{'' if year_value is None else f'（{year_value}）'}",
+            initialdir=initial_dir,
+            filetypes=[
+                ("Excel 文件", "*.xlsx *.xls *.xlsm"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if not selected_path:
+            return ""
+        selected_path = os.path.normpath(os.path.abspath(selected_path))
+        if not os.path.isfile(selected_path):
+            messagebox.showwarning("提示", f"所选路径不是文件:\n{selected_path}")
+            return ""
+        return selected_path
+
+    def any_tab_process_running(self):
+        for tab_id, tab_data in list(self.active_tabs_data.items()):
+            if not tab_data:
+                continue
+            if tab_data.get("current_process") or self.has_async_processes(tab_id):
+                return True
+        return False
+
+    def get_execution_tab_for_award(self, award_name):
+        current_tab_id = self.tabview.get() if hasattr(self, "tabview") else ""
+        current_tab_data = self.active_tabs_data.get(current_tab_id)
+        if current_tab_data and _clean(current_tab_data.get("award")) == _clean(award_name):
+            return current_tab_id
+        for tab_id, tab_data in list(self.active_tabs_data.items()):
+            if tab_data and _clean(tab_data.get("award")) == _clean(award_name):
+                return tab_id
+        return ""
+
+    def on_sidebar_delete_database_click(self):
+        award_name = self.award_menu.get()
+        year_value = self.get_sidebar_selected_year_int()
+        if not award_name or year_value is None:
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return
+        if self.any_tab_process_running():
+            custom_dialog("请先停止运行", "当前仍有运行中的顺序或异步代码，请先暂停后再删库。", "info", "确认")
+            return
+        db_path = self.get_award_year_database_path(award_name, year_value)
+        if not db_path:
+            custom_dialog("缺少数据库路径", "未能定位当前奖项年份对应的数据库。", "error", "确认")
+            return
+        wal_path = db_path + ".wal"
+        message = (
+            f"确认删除 {award_name} {year_value} 年数据库？\n\n"
+            f"目标文件:\n{db_path}\n\n"
+            "此操作不可恢复，但不会删除原始 Excel。"
+        )
+        confirmed = custom_dialog("确认删除旧库", message, "confirm", "确认删除", "取消")
+        if not confirmed:
+            return
+        removed_any = False
+        errors = []
+        for target in [db_path, wal_path]:
+            if not os.path.exists(target):
+                continue
+            try:
+                os.remove(target)
+                removed_any = True
+            except Exception as e:
+                errors.append(f"{target}\n{e}")
+        if errors:
+            custom_dialog("删除失败", "\n\n".join(errors), "error", "确认")
+            return
+        if removed_any:
+            messagebox.showinfo("删除完成", f"已删除旧数据库:\n{db_path}")
+        else:
+            messagebox.showinfo("删除完成", f"未发现可删除的数据库文件:\n{db_path}")
+
+    def on_sidebar_data_ingestion_click(self):
+        award_name = self.award_menu.get()
+        year_value = self.get_sidebar_selected_year_int()
+        if not award_name or year_value is None:
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return
+        if self.any_tab_process_running():
+            custom_dialog("请先停止运行", "当前仍有运行中的顺序或异步代码，请先暂停后再入库。", "info", "确认")
+            return
+        script_path = self.get_award_data_ingestion_script_path(award_name)
+        if not script_path:
+            custom_dialog("缺少脚本", "未找到奖项根目录下的 `data_ingestion.py`。", "error", "确认")
+            return
+        selected_src = self.choose_sidebar_ingestion_source_file(award_name, year_value)
+        if not selected_src:
+            return
+        db_path = self.get_award_year_database_path(award_name, year_value)
+        preview = (
+            f"奖项: {award_name}\n"
+            f"年份: {year_value}\n"
+            f"目标数据库: {db_path}\n"
+            f"源文件: {selected_src}\n\n"
+            "确认开始入库吗？"
+        )
+        confirmed = custom_dialog("确认开始数据入库", preview, "confirm", "开始入库", "取消")
+        if not confirmed:
+            return
+        active_tab_id = self.get_execution_tab_for_award(award_name)
+        tab_data = self.active_tabs_data.get(active_tab_id)
+        if not tab_data:
+            messagebox.showinfo("提示", f"请先至少挂载一个 `{award_name}` 工作区页签，用于承载入库日志。")
+            return
+        manifest = tab_data.get("manifest", {})
+        workspace_root = manifest.get("workspace_root", "")
+        rel_path = os.path.relpath(script_path, workspace_root) if workspace_root else script_path
+        src_arg = os.path.normpath(os.path.abspath(selected_src))
+        self.clear_error_focus(active_tab_id)
+        tab_data["batch_has_started_steps"] = False
+        tab_data["main_batch_finished"] = False
+        tab_data["post_batch_update_done"] = False
+        self.refresh_tab_panels(active_tab_id)
+        run_info = {
+            "order": None,
+            "is_manual_code": True,
+            "is_root_code": True,
+            "display_label": "数据入库",
+            "script_name": os.path.basename(script_path),
+            "rel_path": rel_path,
+            "folder_rel_path": "",
+            "argv": ["--yr", str(year_value), "--src", src_arg],
+        }
+        self.log_msg(active_tab_id, f"准备入库: award={award_name}, year={year_value}, src={src_arg}")
+        self.run_script_thread(run_info, active_tab_id)
 
     def open_inst_txt(self):
         award = self.award_menu.get()
@@ -1821,6 +2372,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 "console_user_locked": False,
                 "log_auto_follow_enabled": True,
                 "log_auto_follow_resume_job": None,
+                "log_auto_follow_last_user_ts": 0.0,
                 "refresh_panels_job": None,
                 "loading_overlay_show_job": None,
                 "loading_overlay_hide_job": None,
@@ -2389,10 +2941,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             return {}
         tab_data["attempt_pending_final_status"] = status
         tab_data["attempt_pending_final_message"] = message or ""
-        if self.is_main_process_running(tab_id) or self.has_async_processes(tab_id):
-            self.persist_attempt_snapshot(tab_id, "running", final=False, message=message or "主步骤链已结束，等待异步任务完成。")
-            if self.has_async_processes(tab_id):
-                self.log_msg(tab_id, "主步骤链已结束，等待异步/工具代码完成后再归档本次尝试。")
+        if self.is_main_process_running(tab_id):
+            self.persist_attempt_snapshot(tab_id, "running", final=False, message=message or "主步骤链已结束，等待顺序步骤进程结束。")
             return {}
         return self.complete_attempt_run(tab_id, status, message)
 
@@ -2647,14 +3197,15 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         except Exception:
             active_tab_id = None
         for tab_id in list(self.active_tabs_data.keys()):
-            enabled = self.is_main_process_running(tab_id) or self.has_async_processes(tab_id)
+            main_running = self.is_main_process_running(tab_id)
+            enabled = main_running or self.has_async_processes(tab_id)
             self.set_pause_button_state(tab_id, enabled)
             self.refresh_run_timer_label(tab_id)
             self.ensure_workspace_tab_breathing(tab_id)
             tab_data = self.active_tabs_data.get(tab_id)
             if tab_data and tab_data.get("attempt_active"):
                 pending_status = _clean(tab_data.get("attempt_pending_final_status"))
-                if pending_status and not enabled:
+                if pending_status and not main_running:
                     self.complete_attempt_run(tab_id, pending_status, tab_data.get("attempt_pending_final_message", ""))
                     tab_data = self.active_tabs_data.get(tab_id)
             if active_tab_id != tab_id:
@@ -2943,6 +3494,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         except Exception:
             return
         tab_data["log_auto_follow_enabled"] = True
+        tab_data["log_auto_follow_last_user_ts"] = 0.0
         self.cancel_log_auto_follow_resume(tab_id)
 
     def resume_log_auto_follow(self, tab_id):
@@ -2950,6 +3502,16 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if not tab_data:
             return
         tab_data["log_auto_follow_resume_job"] = None
+        last_user_ts = float(tab_data.get("log_auto_follow_last_user_ts", 0.0) or 0.0)
+        if last_user_ts:
+            elapsed_ms = int((time.monotonic() - last_user_ts) * 1000)
+            if elapsed_ms < LOG_AUTO_FOLLOW_IDLE_MS:
+                tab_data["log_auto_follow_resume_job"] = self.safe_after(
+                    max(80, LOG_AUTO_FOLLOW_IDLE_MS - elapsed_ms),
+                    self.resume_log_auto_follow,
+                    tab_id,
+                )
+                return
         self.scroll_log_box_to_bottom(tab_id)
 
     def update_log_auto_follow_state(self, tab_id):
@@ -2959,11 +3521,13 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         log_box = tab_data.get("log_box")
         if self.is_log_box_near_bottom(log_box):
             tab_data["log_auto_follow_enabled"] = True
+            tab_data["log_auto_follow_last_user_ts"] = 0.0
             self.cancel_log_auto_follow_resume(tab_id)
             return
         tab_data["log_auto_follow_enabled"] = False
+        tab_data["log_auto_follow_last_user_ts"] = time.monotonic()
         self.cancel_log_auto_follow_resume(tab_id)
-        tab_data["log_auto_follow_resume_job"] = self.safe_after(3000, self.resume_log_auto_follow, tab_id)
+        tab_data["log_auto_follow_resume_job"] = self.safe_after(LOG_AUTO_FOLLOW_IDLE_MS, self.resume_log_auto_follow, tab_id)
 
     def on_log_box_user_interaction(self, tab_id, _event=None):
         self.safe_after(0, self.update_log_auto_follow_state, tab_id)
@@ -3116,13 +3680,25 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             run_info["timeline_env"] = dict(timeline_env)
             run_info["timeline_started_at"] = time.time()
         env.update(timeline_env)
+        init_ctx = getattr(self, "sidebar_initialize_context", {}) or {}
+        init_env_applied = False
+        if init_ctx.get("active") and _clean(init_ctx.get("year")) and _clean(init_ctx.get("award")) == _clean(tab_data.get("award")):
+            env["GB_INIT_FROM_TERMINAL"] = "1"
+            env["GB_INIT_YEAR"] = str(init_ctx.get("year")).strip()
+            init_env_applied = True
         
         try:
             with open(log_filename, "w", encoding="utf-8") as f:
                 if run_info is not None:
                     run_info["log_filename"] = os.path.abspath(log_filename)
+                extra_argv = []
+                for arg in step_info.get("argv", []) or []:
+                    if arg is None:
+                        continue
+                    extra_argv.append(str(arg))
+                cmd = [sys.executable, step_entry_script, step_info["rel_path"], *extra_argv]
                 process = subprocess.Popen(
-                    [sys.executable, step_entry_script, step_info["rel_path"]],
+                    cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=manifest["workspace_root"],
@@ -3175,6 +3751,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 process.wait()
                 # --- 新增：任务完成后清理句柄 ---
                 tab_data["current_process"] = None
+                if init_env_applied:
+                    year_info_path = os.path.join(manifest["workspace_root"], "参评信息", "年份信息.txt")
+                    if os.path.isfile(year_info_path):
+                        self.clear_sidebar_initialize_context()
                 self.safe_after(0, self.set_pause_button_state, tab_id, self.has_async_processes(tab_id))
                 
                 
@@ -3233,8 +3813,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             self.render_tab_content(tab_id)
             self.render_workspace_stepper(tab_id)
             self.render_gantt_tab(tab_id)
-            if self.get_workspace_view_name(tab_id) == "计算结果":
-                self.render_calc_results_panel(tab_id)
+            # 计算结果页需要跟着文件系统刷新，避免用户停留在其它页运行 step_4 后结果区仍显示旧内容。
+            self.render_calc_results_panel(tab_id)
         except Exception as exc:
             self.show_gui_error("刷新界面失败", exc, "当前标签页刷新失败，界面已保留现场，请检查报错信息。", tab_id=tab_id)
         finally:
