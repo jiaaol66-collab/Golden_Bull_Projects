@@ -17,6 +17,7 @@ if ctk is not None:
 
 FIELD_SPECS = [
     {"key": "post_visualization_mode", "label": "后置可视化模式", "kind": "bool", "help": "False 保持并行 open_file()；True 改为后置串行 run()。"},
+    {"key": "manager_tenure_filter_in_step2", "label": "经理任职过滤前置", "kind": "bool", "help": "True：step2 即按任职窗口裁净值并据此算收益率/缺失率；False：保持旧逻辑在 step3 裁。"},
     {"key": "use_monthly", "label": "启用月度处理", "kind": "bool", "help": "是否处理并输出月度净值链路。"},
     {"key": "score_method", "label": "评分方法", "kind": "choice", "choices": ["1", "2", "3"], "help": "1=Zscore，2=归一化，3=排名。"},
     {"key": "abnormal_method", "label": "异常值方法", "kind": "choice", "choices": ["median", "mean3", "forbidden"], "help": "异常值处理口径。"},
@@ -190,7 +191,7 @@ def validate_config_payload(default_obj, profiles_obj):
                 for required in ("周度", "月度"):
                     if required not in annual_factor:
                         errors.append(f"{prefix}.annual_factor 缺少 {required}。")
-        for bool_key in ("post_visualization_mode", "use_monthly"):
+        for bool_key in ("post_visualization_mode", "use_monthly", "manager_tenure_filter_in_step2"):
             if bool_key in payload and not isinstance(payload.get(bool_key), bool):
                 errors.append(f"{prefix}.{bool_key} 必须是布尔值。")
 
@@ -279,8 +280,12 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self.geometry("1460x900")
         self.minsize(1240, 760)
         self.configure(fg_color=APP_BG)
-        self.transient(master)
         self.attributes("-topmost", True)
+        self.resizable(True, True)
+        try:
+            self.after(0, lambda: self.state("zoomed"))
+        except Exception:
+            pass
 
         self.load_from_config_file()
         self.build_layout()

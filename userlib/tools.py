@@ -37,8 +37,52 @@ def run_command(command, working_directory=None):
     print('\n')
     print(command_description.center(80, '='))
     print()
+    child_env = None
+    effective_command = command
+    effective_cwd = working_directory
+    if isinstance(command, (list, tuple)) and len(command) >= 2:
+        exe_name = os.path.basename(str(command[0])).lower()
+        script_arg = str(command[1]).strip()
+        if exe_name.startswith("python") and script_arg.lower().endswith(".py"):
+            script_path = script_arg
+            if not os.path.isabs(script_path):
+                base_dir = working_directory or os.getcwd()
+                script_path = os.path.join(base_dir, script_path)
+            script_path = os.path.abspath(script_path)
+            if os.path.isfile(script_path):
+                workspace_root = _get_env_text("GB_TIMELINE_WORKSPACE_ROOT")
+                if workspace_root:
+                    workspace_root = os.path.abspath(workspace_root)
+                rel_path = _compute_timeline_rel_path(script_path, workspace_root)
+                top_folder = rel_path.split(os.sep, 1)[0] if rel_path else ""
+                axis = "main" if top_folder.lower().startswith("step_") else (_get_env_text("GB_TIMELINE_AXIS") or "root")
+                child_env = os.environ.copy()
+                child_env["GB_TIMELINE_WORKSPACE_ROOT"] = workspace_root or ""
+                child_env["GB_TIMELINE_SESSION_ID"] = _get_env_text("GB_TIMELINE_SESSION_ID") or _make_timeline_id("session")
+                child_env["GB_TIMELINE_RUN_ID"] = _make_timeline_id("run")
+                child_env["GB_TIMELINE_PARENT_REL"] = _get_env_text("GB_TIMELINE_REL_PATH")
+                child_env["GB_TIMELINE_PARENT_RUN_ID"] = _get_env_text("GB_TIMELINE_RUN_ID")
+                child_env["GB_TIMELINE_AXIS"] = axis
+                child_env["GB_TIMELINE_SOURCE"] = "sync_run"
+                child_env["GB_TIMELINE_REL_PATH"] = rel_path
+                print(f"[run] 子脚本时间线已切换到: {rel_path}")
+                project_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+                bridge_script = os.path.join(project_root, "gb_runtime_patch", "async_console_bridge.py")
+                log_path = _build_async_log_path(script_path)
+                if log_path and os.path.isfile(bridge_script):
+                    print(f"[run] 子脚本日志文件: {log_path}")
+                    python_executable = command[0]
+                    effective_command = [
+                        sys.executable,
+                        bridge_script,
+                        "--python", str(python_executable),
+                        "--script", script_path,
+                        "--cwd", os.path.dirname(script_path),
+                        "--log", log_path,
+                    ]
+                    effective_cwd = os.path.dirname(script_path)
     try:
-        result = subprocess.run(command, check=True, cwd=working_directory)
+        result = subprocess.run(effective_command, check=True, cwd=effective_cwd, env=child_env)
         print(f"{command} 执行成功。")
         return True
     except subprocess.CalledProcessError as e:

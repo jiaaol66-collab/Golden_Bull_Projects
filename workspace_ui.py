@@ -1655,9 +1655,7 @@ class WorkspaceUIMixin:
         except Exception:
             return
 
-    def copy_files_to_clipboard(self, paths):
-        if os.name != "nt":
-            return False
+    def _resolve_existing_paths(self, paths):
         resolved = []
         for path in paths or []:
             if not path:
@@ -1665,13 +1663,47 @@ class WorkspaceUIMixin:
             abs_path = os.path.normpath(os.path.abspath(str(path)))
             if os.path.exists(abs_path):
                 resolved.append(abs_path)
+        return resolved
+
+    def _get_path_mtime(self, path):
+        try:
+            return float(os.path.getmtime(path))
+        except OSError:
+            return 0.0
+
+    def _sort_paths_desc(self, paths):
+        return sorted(paths or [], key=self._get_path_mtime, reverse=True)
+
+    def _copy_paths_as_text(self, paths):
+        resolved = self._resolve_existing_paths(paths)
         if not resolved:
-            return False
+            return {"ok": False, "ok_text": False, "count": 0, "paths": []}
+        try:
+            self.copy_to_clipboard("\r\n".join(resolved))
+            return {"ok": True, "ok_text": True, "count": len(resolved), "paths": resolved}
+        except Exception:
+            return {"ok": False, "ok_text": False, "count": len(resolved), "paths": resolved}
+
+    def copy_files_to_clipboard(self, paths):
+        resolved = self._resolve_existing_paths(paths)
+        if not resolved:
+            return {"ok": False, "ok_files": False, "ok_text": False, "count": 0, "paths": []}
+        if os.name != "nt":
+            text_result = self._copy_paths_as_text(resolved)
+            return {
+                "ok": bool(text_result.get("ok_text")),
+                "ok_files": False,
+                "ok_text": bool(text_result.get("ok_text")),
+                "count": text_result.get("count", 0),
+                "paths": text_result.get("paths", []),
+            }
+        joined = "\r\n".join(resolved)
         try:
             import ctypes
             from ctypes import wintypes
 
             CF_HDROP = 15
+            CF_UNICODETEXT = 13
             GMEM_MOVEABLE = 0x0002
 
             class DROPFILES(ctypes.Structure):
@@ -1702,32 +1734,104 @@ class WorkspaceUIMixin:
 
             hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, total_size)
             if not hglobal:
-                return False
+                text_result = self._copy_paths_as_text(resolved)
+                return {"ok": bool(text_result.get("ok_text")), "ok_files": False, "ok_text": bool(text_result.get("ok_text")), "count": len(resolved), "paths": list(resolved)}
             locked = kernel32.GlobalLock(hglobal)
             if not locked:
                 kernel32.GlobalFree(hglobal)
-                return False
+                text_result = self._copy_paths_as_text(resolved)
+                return {"ok": bool(text_result.get("ok_text")), "ok_files": False, "ok_text": bool(text_result.get("ok_text")), "count": len(resolved), "paths": list(resolved)}
             ctypes.memmove(locked, ctypes.byref(header), ctypes.sizeof(DROPFILES))
             ctypes.memmove(locked + ctypes.sizeof(DROPFILES), payload, len(payload))
             kernel32.GlobalUnlock(hglobal)
 
-            if not user32.OpenClipboard(None):
+            open_ok = False
+            for _ in range(3):
+                if user32.OpenClipboard(None):
+                    open_ok = True
+                    break
+                time.sleep(0.03)
+            if not open_ok:
                 kernel32.GlobalFree(hglobal)
-                return False
+                text_result = self._copy_paths_as_text(resolved)
+                return {"ok": bool(text_result.get("ok_text")), "ok_files": False, "ok_text": bool(text_result.get("ok_text")), "count": len(resolved), "paths": list(resolved)}
             try:
-                user32.EmptyClipboard()
-                if not user32.SetClipboardData(CF_HDROP, hglobal):
+                ok_files = False
+                for _ in range(3):
+                    user32.EmptyClipboard()
+                    ok_files = bool(user32.SetClipboardData(CF_HDROP, hglobal))
+                    if ok_files:
+                        break
+                    time.sleep(0.03)
+                if not ok_files:
                     kernel32.GlobalFree(hglobal)
-                    return False
+                    text_result = self._copy_paths_as_text(resolved)
+                    return {"ok": bool(text_result.get("ok_text")), "ok_files": False, "ok_text": bool(text_result.get("ok_text")), "count": len(resolved), "paths": list(resolved)}
                 hglobal = None
-                return True
+                text_payload = (joined + "\0").encode("utf-16le")
+                hglobal_text = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_payload))
+                ok_text = False
+                if hglobal_text:
+                    locked_text = kernel32.GlobalLock(hglobal_text)
+                    if locked_text:
+                        ctypes.memmove(locked_text, text_payload, len(text_payload))
+                        kernel32.GlobalUnlock(hglobal_text)
+                        for _ in range(3):
+                            ok_text = bool(user32.SetClipboardData(CF_UNICODETEXT, hglobal_text))
+                            if ok_text:
+                                break
+                            time.sleep(0.03)
+                        if ok_text:
+                            hglobal_text = None
+                    if hglobal_text:
+                        kernel32.GlobalFree(hglobal_text)
+                return {"ok": True, "ok_files": True, "ok_text": ok_text, "count": len(resolved), "paths": list(resolved)}
             finally:
                 user32.CloseClipboard()
         except Exception:
-            return False
+            text_result = self._copy_paths_as_text(resolved)
+            return {"ok": bool(text_result.get("ok_text")), "ok_files": False, "ok_text": bool(text_result.get("ok_text")), "count": len(resolved), "paths": list(resolved)}
 
     def copy_single_file_to_clipboard(self, path):
         return self.copy_files_to_clipboard([path])
+
+    def copy_calc_results_paths(self, tab_id, paths, label=""):
+        result = self.copy_files_to_clipboard(paths)
+        ok = bool(result.get("ok"))
+        resolved = result.get("paths") or []
+        count = int(result.get("count") or 0)
+        if hasattr(self, "log_msg") and resolved:
+            preview = "\n".join(resolved[:30])
+            suffix = f"\n...(共 {count} 项)" if count > 30 else ""
+            self.log_msg(tab_id, f"已复制{label or '文件'}路径到剪贴板:\n{preview}{suffix}", raw=True)
+        try:
+            from tkinter import messagebox
+            if ok:
+                if result.get("ok_files") and result.get("ok_text"):
+                    messagebox.showinfo("复制成功", f"已复制{label or '文件'}：{count} 项\n可直接粘贴到聊天窗口/文本框，也可在资源管理器粘贴文件。", parent=self)
+                elif result.get("ok_text"):
+                    messagebox.showinfo("复制成功", f"已复制{label or '文件'}路径：{count} 项\n可直接粘贴到聊天窗口/文本框。\n如需发送文件本体，请用“定位”后拖拽发送。", parent=self)
+                else:
+                    messagebox.showinfo("复制成功", f"已复制{label or '文件'}：{count} 项\n可在资源管理器粘贴文件。", parent=self)
+            else:
+                messagebox.showwarning("复制失败", f"未能复制{label or '文件'}，请确认路径存在。", parent=self)
+        except Exception:
+            return
+
+    def reveal_in_explorer(self, path):
+        resolved_path = os.path.normpath(os.path.abspath(str(path)))
+        if not os.path.exists(resolved_path):
+            return False
+        if os.name != "nt":
+            return False
+        try:
+            if os.path.isfile(resolved_path):
+                subprocess.Popen(["explorer.exe", "/select,", resolved_path])
+            else:
+                subprocess.Popen(["explorer.exe", resolved_path])
+            return True
+        except Exception:
+            return False
 
     def _iter_calc_result_folders_in_step(self, step_root, max_depth=2):
         if not step_root or not os.path.isdir(step_root):
@@ -1805,7 +1909,8 @@ class WorkspaceUIMixin:
 
             groups = {}
             if root_files:
-                groups["根目录"] = {"folder": root, "files": sorted(root_files)}
+                root_files = self._sort_paths_desc(root_files)
+                groups["根目录"] = {"folder": root, "files": list(root_files)}
                 all_files.extend(root_files)
 
             for folder_path in sorted(root_folders):
@@ -1825,24 +1930,37 @@ class WorkspaceUIMixin:
                     files = []
                 if not files:
                     continue
-                groups.setdefault(group_name, {"folder": folder_path, "files": []})["files"].extend(sorted(files))
+                files = self._sort_paths_desc(files)
+                groups.setdefault(group_name, {"folder": folder_path, "files": []})["files"].extend(files)
                 all_files.extend(files)
 
+            for payload in groups.values():
+                payload["files"] = self._sort_paths_desc(payload.get("files") or [])
+
             panel_candidates = []
-            for file_path in sorted({*root_files, *[p for g in groups.values() for p in g.get("files", [])]}):
+            for file_path in {*(root_files or []), *[p for g in groups.values() for p in g.get("files", [])]}:
                 base = os.path.basename(file_path)
                 if "结果面板" in base or (base.endswith(".xlsx") and "面板" in base):
                     panel_candidates.append(file_path)
+            panel_candidates = self._sort_paths_desc(panel_candidates)
+            latest_ts = 0.0
+            for file_path in {*(root_files or []), *[p for g in groups.values() for p in g.get("files", [])], *(panel_candidates or [])}:
+                latest_ts = max(latest_ts, self._get_path_mtime(file_path))
 
             items.append(
                 {
                     "root": root,
                     "groups": [(k, groups[k]) for k in ["周度", "月度", "根目录", "其他"] if k in groups],
                     "panel_candidates": panel_candidates,
+                    "_latest_ts": latest_ts,
                 }
             )
 
-        return items, sorted({os.path.normpath(os.path.abspath(p)) for p in all_files if os.path.isfile(p)})
+        all_files = sorted({os.path.normpath(os.path.abspath(p)) for p in all_files if os.path.isfile(p)})
+        items.sort(key=lambda item: float(item.get("_latest_ts") or 0.0), reverse=True)
+        for item in items:
+            item.pop("_latest_ts", None)
+        return items, self._sort_paths_desc(all_files)
 
     def render_calc_results_panel(self, tab_id):
         tab_data = self.active_tabs_data.get(tab_id)
@@ -1909,7 +2027,7 @@ class WorkspaceUIMixin:
             width=WIDTH_ACTION_BUTTON,
             corner_radius=RADIUS_SM,
             state="normal" if all_files else "disabled",
-            command=lambda tid=tab_id: self.copy_files_to_clipboard(self.active_tabs_data.get(tid, {}).get("calc_results_all_paths", [])),
+            command=lambda tid=tab_id: self.copy_calc_results_paths(tid, self.active_tabs_data.get(tid, {}).get("calc_results_all_paths", []), "文件"),
             **button_secondary_style(),
         ).pack(side="left")
 
@@ -1945,13 +2063,13 @@ class WorkspaceUIMixin:
                 text="复制目录",
                 width=WIDTH_ACTION_BUTTON,
                 corner_radius=RADIUS_SM,
-                command=lambda p=root_path: self.copy_single_file_to_clipboard(p),
+                command=lambda tid=tab_id, p=root_path: self.copy_calc_results_paths(tid, [p], "目录"),
                 **button_secondary_style(),
             ).pack(side="left")
 
             panel_candidates = info.get("panel_candidates") or []
             if panel_candidates:
-                panel_path = panel_candidates[-1]
+                panel_path = panel_candidates[0]
                 panel_row = ctk.CTkFrame(card, **surface_card_style())
                 panel_row.pack(fill="x", padx=10, pady=(0, 8))
                 ctk.CTkLabel(panel_row, text=os.path.basename(panel_path), text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(anchor="w", padx=8, pady=(8, 0))
@@ -1971,9 +2089,17 @@ class WorkspaceUIMixin:
                     text="复制文件",
                     width=WIDTH_ACTION_BUTTON,
                     corner_radius=RADIUS_SM,
-                    command=lambda p=panel_path: self.copy_single_file_to_clipboard(p),
+                    command=lambda tid=tab_id, p=panel_path: self.copy_calc_results_paths(tid, [p], "文件"),
                     **button_secondary_style(),
                 ).pack(side="left")
+                ctk.CTkButton(
+                    action_row,
+                    text="定位",
+                    width=WIDTH_ACTION_BUTTON,
+                    corner_radius=RADIUS_SM,
+                    command=lambda p=panel_path: self.reveal_in_explorer(p),
+                    **button_secondary_style(),
+                ).pack(side="left", padx=(6, 0))
 
             for group_name, payload in info.get("groups", []):
                 files = payload.get("files") or []
@@ -2000,9 +2126,17 @@ class WorkspaceUIMixin:
                         text="复制文件",
                         width=WIDTH_ACTION_BUTTON,
                         corner_radius=RADIUS_SM,
-                        command=lambda p=file_path: self.copy_single_file_to_clipboard(p),
+                        command=lambda tid=tab_id, p=file_path: self.copy_calc_results_paths(tid, [p], "文件"),
                         **button_secondary_style(),
                     ).pack(side="left")
+                    ctk.CTkButton(
+                        action_row,
+                        text="定位",
+                        width=WIDTH_ACTION_BUTTON,
+                        corner_radius=RADIUS_SM,
+                        command=lambda p=file_path: self.reveal_in_explorer(p),
+                        **button_secondary_style(),
+                    ).pack(side="left", padx=(6, 0))
 
     def open_path(self, path, ensure_dir=False):
         if not path:

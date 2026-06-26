@@ -421,6 +421,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         super().__init__()
         self.title("金牛奖终端中控台")
         self.geometry("1120x720")
+        try:
+            self.after(0, lambda: self.state("zoomed"))
+        except Exception:
+            pass
         self.configure(fg_color=APP_BG)
         
         self.active_tabs_data = {}

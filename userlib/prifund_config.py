@@ -57,6 +57,7 @@ DEFAULT = {'all_terms': [1, 3, 5, 7],
  'index_exclude_name': '其他指数或合成指数',
  'mana_annualize_n': {1: 1, 3: 3, 5: 5, 7: 7},
  'annual_factor': {'周度': 52, '月度': 12},
+ 'manager_tenure_filter_in_step2': False,
  'post_visualization_mode': False,
  'sigma_threshold': 10,
  'abnormal_method': 'median',
@@ -69,7 +70,9 @@ DEFAULT = {'all_terms': [1, 3, 5, 7],
 # ============================================================
 # PROFILES —— 按年份覆盖（只写与 DEFAULT 不同的项；往年可定死）
 # ============================================================
-PROFILES = {2026: {'post_visualization_mode': True}, 2025: {}, 2024: {}}
+PROFILES = {2026: {'all_terms': [1, 3, 5], 'terms_stock': [1, 3, 5], 'post_visualization_mode': True},
+ 2025: {},
+ 2024: {}}
 
 
 # ============================================================
