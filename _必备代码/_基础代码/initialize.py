@@ -177,6 +177,8 @@ for py in os.listdir(rel+'_工具代码'):
 for py in os.listdir(rel+'_默认代码'):
     if py == 'default_code.py':
         copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/代码/{py}',1)
+    elif py == 'default_notebook.ipynb':
+        copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/说明/notebook/{py}',1)
     else:
         copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/说明/{py}',1)
 # ————————————————————————————————————————————————————————————————————————————————————————————
