@@ -41,9 +41,8 @@ debug-*.md
 .DS_Store
 Thumbs.db
 
+# structure
+!文件结构.xlsx
+
 # Award child repos
-/私募金牛奖步骤/
-/公募金牛奖步骤/
-/分析师金牛奖客观评价步骤/
-/券商资管金牛奖步骤/
-/银行理财金牛奖步骤/
+/GB_*/

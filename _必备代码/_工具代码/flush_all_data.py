@@ -135,7 +135,11 @@ output = info[(info['子文件夹1'] == '输出文件') | (info['子文件夹2']
 output_list = []
 
 for idx, row in output.iterrows():
-    path = f"step_{row['步骤']} {row['工作区文件夹']}/{row['子文件夹1']}/{row['子文件夹2']}/{row['子文件夹3']}/"
+    step_underscore = f"step_{row['步骤']}_{row['工作区文件夹']}"
+    step_space = f"step_{row['步骤']} {row['工作区文件夹']}"
+    path_underscore = f"{step_underscore}/{row['子文件夹1']}/{row['子文件夹2']}/{row['子文件夹3']}/"
+    path_space = f"{step_space}/{row['子文件夹1']}/{row['子文件夹2']}/{row['子文件夹3']}/"
+    path = path_underscore if os.path.exists(path_underscore) else path_space
     output_list.append(path)
     
 

@@ -12,7 +12,10 @@ except ModuleNotFoundError:
     ctk = None
 
 if ctk is not None:
-    from style_config import *
+    try:
+        from .style_config import *
+    except Exception:
+        from style_config import *
 
 
 FIELD_SPECS = [

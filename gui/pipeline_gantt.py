@@ -8,7 +8,10 @@ import uuid
 
 import customtkinter as ctk
 
-from style_config import *
+try:
+    from .style_config import *
+except Exception:
+    from style_config import *
 
 
 def _clean_text(value):
@@ -147,7 +150,7 @@ class PipelineGanttMixin:
         return metadata
 
     def get_logs_root(self):
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 
     def get_workspace_logs_root(self, manifest):
         metadata = self.ensure_workspace_metadata(manifest)

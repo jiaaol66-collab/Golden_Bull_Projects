@@ -9,10 +9,12 @@ import time
 import re
 import traceback
 import uuid
+import importlib
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 from openpyxl import load_workbook
+import award_config as award_config_module
 from award_config import (
     AWARD_FOLDER_MAP,
     get_award_config_file,
@@ -22,12 +24,29 @@ from award_config import (
     get_manifest_award,
     has_award_config,
 )
-from config_editor import ConfigEditorWindow
-from pipeline_gantt import PipelineGanttMixin
-from workspace_ui import WorkspaceUIMixin
-from style_config import *
-import motion
+from gui.config_editor import ConfigEditorWindow
+from gui.file_tree_editor import FileStructureEditorWindow
+from gui.pipeline_gantt import PipelineGanttMixin
+from gui.workspace_ui import WorkspaceUIMixin
+from gui.style_config import *
+from gui import motion
 from userlib.tools import custom_dialog
+
+try:
+    from customtkinter.windows.widgets.ctk_scrollable_frame import CTkScrollableFrame
+
+    if not getattr(CTkScrollableFrame._mouse_wheel_all, "_gb_safe_widget_patched", False):
+        _gb_orig_mouse_wheel_all = CTkScrollableFrame._mouse_wheel_all
+
+        def _gb_safe_mouse_wheel_all(self, event):
+            if isinstance(getattr(event, "widget", None), str):
+                return
+            return _gb_orig_mouse_wheel_all(self, event)
+
+        _gb_safe_mouse_wheel_all._gb_safe_widget_patched = True
+        CTkScrollableFrame._mouse_wheel_all = _gb_safe_mouse_wheel_all
+except Exception:
+    pass
 
 # ================= 底层解析器逻辑 =================
 LOG_AUTO_FOLLOW_IDLE_MS = 3000
@@ -37,15 +56,51 @@ def _clean(v):
     s = str(v).strip()
     return "" if s in (".", "None") else s
 
+def _parse_run_order(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value:
+            return None
+        if value.is_integer():
+            return int(value)
+        return None
+    text = _clean(value)
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if re.match(r"^\d+\.0+$", text):
+        return int(float(text))
+    return None
+
 def _is_step_id(v):
     s = _clean(v)
     return bool(s) and s.replace("_", "").isdigit()
 
-def _step_folder(step, folder):
+def _step_folder(step, folder, workspace_root=""):
     folder = _clean(folder)
-    if not folder: return ""
-    if _is_step_id(step): return f"step_{_clean(step)} {folder}"
-    return folder
+    if not folder:
+        return ""
+    if not _is_step_id(step):
+        return folder
+    step_text = _clean(step)
+    preferred = f"step_{step_text}_{folder}"
+    legacy = f"step_{step_text} {folder}"
+    root = _clean(workspace_root)
+    if root:
+        try:
+            if os.path.isdir(os.path.join(root, preferred)):
+                return preferred
+            if os.path.isdir(os.path.join(root, legacy)):
+                return legacy
+        except Exception:
+            pass
+    return preferred
 
 
 def _quote_cli_arg(value):
@@ -106,6 +161,11 @@ def _top_step_folder(rel_path):
         return ""
     first_part = text.split(os.sep, 1)[0]
     return first_part if first_part.lower().startswith("step_") else ""
+
+
+def _natural_step_path_key(path_text):
+    top_folder = _top_step_folder(path_text) or _clean(path_text)
+    return _natural_sort_key(top_folder)
 
 
 def _natural_sort_key(text):
@@ -172,7 +232,14 @@ def _discover_code_inventory(workspace_root, steps):
         })
 
     for entry in step_code_folders:
-        entry["main_steps"].sort(key=lambda item: (item.get("order") is None, item.get("order") or 999999, _natural_sort_key(item.get("display_label", item.get("script_name", "")))))
+        entry["main_steps"].sort(
+            key=lambda item: (
+                item.get("order") is None,
+                item.get("order") if isinstance(item.get("order"), int) else 999999,
+                _natural_sort_key(item.get("display_label", item.get("script_name", ""))),
+                _natural_sort_key(item.get("rel_path", "")),
+            )
+        )
         if entry["main_steps"]:
             entry["order"] = entry["main_steps"][0].get("order")
         abs_dir = entry["abs_path"]
@@ -201,7 +268,7 @@ def _discover_code_inventory(workspace_root, steps):
 
     step_code_folders = sorted(
         step_code_folders,
-        key=lambda item: ((item.get("order") is None), item.get("order") or 999999, _natural_sort_key(item.get("folder_rel_path", ""))),
+        key=lambda item: _natural_step_path_key(item.get("folder_rel_path", "")),
     )
 
     default_update_rel_path = _find_default_update_script(workspace_root)
@@ -258,16 +325,18 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
     steps, verify = [], []
     docs_by_dir = {}
     docs_by_binding = {}
+    doc_groups = {}
     output_folders = []
     output_seen = set()
     for r in data:
         if r[col["工作区名"]] != award: continue
-        folder = _step_folder(r[col["步骤"]], r[col["工作区文件夹"]])
+        folder = _step_folder(r[col["步骤"]], r[col["工作区文件夹"]], workspace_root)
         step_value = _clean(r[col["步骤"]])
         sub_dirs = [r[col[f"子文件夹{i}"]] for i in range(1, 5)]
         rel_dir = _rel_dir(folder, *sub_dirs)
         script = _clean(r[col["相应代码和说明文件"]])
         order = r[col["运行顺序"]]
+        order_num = _parse_run_order(order)
         item_type = _clean(r[col["代码/说明"]])
         other_value = _clean(r[col["其他"]]) if has_other_col else ""
         output_markers = _split_markers(r[col["输出文件"]]) if has_output_col else []
@@ -281,24 +350,46 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
                 output_seen.add(output_key)
                 output_folders.append({
                     "step_value": step_value,
-                    "order": int(order) if isinstance(order, (int, float)) else None,
+                    "order": order_num,
                     "script_name": script,
                     "code_label": code_label,
-                    "display_label": code_label or (_step_display_label(step_value, order, script) if isinstance(order, (int, float)) and script else ""),
+                    "display_label": code_label or (_step_display_label(step_value, order_num, script) if order_num is not None and script else ""),
                     "rel_dir": rel_dir,
                     "markers": output_markers,
                     "note": note,
                 })
 
-        is_pipeline = isinstance(order, (int, float)) and item_type == "代码" and script.endswith(".py")
+        is_pipeline = order_num is not None and item_type == "代码" and _clean(script).lower().endswith(".py")
         if is_pipeline:
+            chosen_rel_dir = rel_dir
+            chosen_rel_path = os.path.join(rel_dir, script) if rel_dir else script
+            if workspace_root and step_value and folder:
+                folder_name = _clean(r[col["工作区文件夹"]])
+                step_text = _clean(r[col["步骤"]])
+                candidates = []
+                for base in (
+                    folder,
+                    f"step_{step_text}_{folder_name}" if _is_step_id(step_text) and folder_name else "",
+                    f"step_{step_text} {folder_name}" if _is_step_id(step_text) and folder_name else "",
+                ):
+                    base = _clean(base)
+                    if base and base not in candidates:
+                        candidates.append(base)
+                for base in candidates:
+                    candidate_dir = _rel_dir(base, *sub_dirs)
+                    candidate_path = os.path.join(candidate_dir, script) if candidate_dir else script
+                    abs_candidate = os.path.join(workspace_root, candidate_path) if candidate_path else ""
+                    if abs_candidate and os.path.isfile(abs_candidate):
+                        chosen_rel_dir = candidate_dir
+                        chosen_rel_path = candidate_path
+                        break
             steps.append({
-                "order": int(order),
+                "order": order_num,
                 "step_value": step_value,
                 "script_name": script,
-                "display_label": _step_display_label(step_value, order, script),
-                "folder_rel_path": rel_dir,
-                "rel_path": os.path.join(rel_dir, script) if rel_dir else script,
+                "display_label": _step_display_label(step_value, order_num, script),
+                "folder_rel_path": chosen_rel_dir,
+                "rel_path": chosen_rel_path,
                 "other_binding": other_value,
             })
             continue
@@ -317,6 +408,19 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
             docs_by_dir.setdefault(rel_dir, []).append(doc_item)
             if other_value:
                 docs_by_binding.setdefault(other_value, []).append(doc_item)
+            doc_group_key = ("binding", other_value) if other_value else ("dir", rel_dir)
+            group = doc_groups.setdefault(doc_group_key, {
+                "step_value": step_value,
+                "order": order_num,
+                "rel_dir": rel_dir,
+                "other_binding": other_value,
+                "docs": [],
+            })
+            if not group.get("step_value") and step_value:
+                group["step_value"] = step_value
+            if group.get("order") is None and order_num is not None:
+                group["order"] = order_num
+            group["docs"].append(doc_item)
             continue
 
         if not script and "机构筛选数据" in rel_dir.replace(os.sep, "/"):
@@ -328,12 +432,56 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
     steps.sort(key=lambda s: s["order"])
     order_to_step = {s["order"]: s for s in steps}
     step_value_to_step = {}
+    used_doc_group_keys = set()
     for s in steps:
         step_value_to_step.setdefault(s.get("step_value", ""), s)
     for step in steps:
         step_dir = os.path.dirname(step["rel_path"])
-        bound_docs = docs_by_binding.get(step.get("other_binding", ""), []) if has_other_col and step.get("other_binding") else []
+        binding_tokens = _split_markers(step.get("other_binding", "")) if has_other_col else []
+        bound_docs = []
+        if binding_tokens:
+            seen = set()
+            for token in binding_tokens:
+                for item in docs_by_binding.get(token, []):
+                    rp = _clean(item.get("rel_path"))
+                    if rp and rp in seen:
+                        continue
+                    if rp:
+                        seen.add(rp)
+                    bound_docs.append(item)
         step["docs"] = bound_docs or docs_by_dir.get(step_dir, [])
+        if bound_docs:
+            for token in binding_tokens:
+                used_doc_group_keys.add(("binding", token))
+        elif step_dir:
+            used_doc_group_keys.add(("dir", step_dir))
+    supplemental_doc_sections = []
+    for group_key, group in doc_groups.items():
+        if group_key in used_doc_group_keys:
+            continue
+        rel_dir = _clean(group.get("rel_dir"))
+        step_value = _clean(group.get("step_value"))
+        order_value = group.get("order")
+        folder_name = os.path.basename(rel_dir.replace("\\", os.sep).replace("/", os.sep)) if rel_dir else ""
+        if isinstance(order_value, int):
+            display_label = _step_display_label(step_value, order_value, folder_name or "说明")
+        else:
+            display_label = folder_name or group.get("other_binding") or (f"step_{step_value}" if step_value else "未命名步骤")
+        supplemental_doc_sections.append({
+            "display_label": display_label,
+            "step_value": step_value,
+            "order": order_value,
+            "rel_dir": rel_dir,
+            "other_binding": _clean(group.get("other_binding")),
+            "docs": list(group.get("docs", [])),
+            "is_doc_only": True,
+        })
+    supplemental_doc_sections.sort(
+        key=lambda item: (
+            _natural_step_path_key(item.get("rel_dir", "")),
+            _natural_sort_key(item.get("display_label", "")),
+        )
+    )
     for item in output_folders:
         if item.get("code_label"):
             item["display_label"] = item["code_label"]
@@ -369,12 +517,13 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
                 item["display_label"] = _step_display_label(item.get("step_value", ""), item.get("order", 0), item.get("script_name", ""))
             if not item.get("display_label"):
                 item["display_label"] = item.get("rel_dir", "")
-    output_folders.sort(key=lambda item: ((item["order"] is None), item["order"] or 999999, item["rel_dir"]))
+    output_folders.sort(key=lambda item: (_natural_step_path_key(item["rel_dir"]), item["rel_dir"]))
     return {
         "workspace_root": workspace_root,
         "steps": steps,
         "verify_folders": verify,
         "output_folders": output_folders,
+        "supplemental_doc_sections": supplemental_doc_sections,
         "step_code_folders": [],
         "other_root_codes": [],
         "default_update_rel_path": "",
@@ -389,6 +538,11 @@ def reconcile_filesystem(manifest):
         s["abs_path"] = p
         s["exists"] = os.path.isfile(p)
         for doc in s.get("docs", []):
+            doc_path = os.path.join(root, doc["rel_path"])
+            doc["abs_path"] = doc_path
+            doc["exists"] = os.path.isfile(doc_path)
+    for section in manifest.get("supplemental_doc_sections", []):
+        for doc in section.get("docs", []):
             doc_path = os.path.join(root, doc["rel_path"])
             doc["abs_path"] = doc_path
             doc["exists"] = os.path.isfile(doc_path)
@@ -454,6 +608,11 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.sidebar_rule_var = ctk.StringVar(value="未识别")
         self.sidebar_initialize_context = {"active": False, "award": "", "year": "", "armed_at": 0.0}
         self.config_editor_window = None
+        self.file_structure_editor_window = None
+        self.award_template_creation_poll_job = None
+        self.award_template_creation_deadline = 0.0
+        self.award_template_guide_window = None
+        self.award_template_guide_context = None
         
         if not os.path.exists("logs"):
             os.makedirs("logs")
@@ -463,6 +622,38 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.poll_process_job = self.safe_after(1000, self.poll_process_states)
         self.bind("<Configure>", self.on_window_configure)
         self.window_resize_job = self.safe_after(150, self.apply_adaptive_layout)
+
+    def restart_terminal(self):
+        if self.app_closing:
+            return
+        try:
+            confirmed = messagebox.askokcancel("确认重启", "将关闭当前终端并重新启动。确认继续吗？", parent=self)
+        except Exception:
+            confirmed = True
+        if not confirmed:
+            return
+        try:
+            exe = sys.executable
+            argv = list(sys.argv)
+            if not exe:
+                raise RuntimeError("未找到 Python 可执行文件路径。")
+            cmd = [exe] + argv
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            subprocess.Popen(
+                cmd,
+                cwd=os.getcwd() or None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        except Exception as exc:
+            try:
+                messagebox.showerror("重启失败", str(exc), parent=self)
+            except Exception:
+                pass
+            return
+        self.on_app_close()
 
     def is_app_alive(self):
         if getattr(self, "app_closing", False):
@@ -555,12 +746,23 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
+        sidebar_title_row = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        sidebar_title_row.pack(fill="x", padx=14, pady=(16, 6))
+        ctk.CTkButton(
+            sidebar_title_row,
+            text="重启",
+            width=56,
+            height=sidebar_compact_button_height,
+            corner_radius=RADIUS_MD,
+            command=self.restart_terminal,
+            **button_warning_style(),
+        ).pack(side="left", padx=(0, 10))
         ctk.CTkLabel(
-            self.sidebar,
+            sidebar_title_row,
             text="工作区配置台",
-            font=ui_font(24, "bold"),
+            font=ui_font(22, "bold"),
             text_color=TEXT_PRIMARY,
-        ).pack(pady=(24, 6))
+        ).pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(
             self.sidebar,
             text="选择奖项、挂载工作区并调度步骤",
@@ -579,6 +781,15 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             **option_menu_style(),
         )
         self.award_menu.pack(fill="x", padx=20, pady=(5, 15))
+        ctk.CTkButton(
+            self.sidebar,
+            text="新建奖项模板",
+            command=self.on_create_award_template_click,
+            corner_radius=RADIUS_MD,
+            height=HEIGHT_BUTTON,
+            font=ui_font(14, "bold"),
+            **button_secondary_style(),
+        ).pack(fill="x", padx=20, pady=(0, 15))
 
         ctk.CTkLabel(self.sidebar, text="选择年份", text_color=TEXT_PRIMARY).pack(anchor="w", padx=22)
         self.year_menu = ctk.CTkOptionMenu(
@@ -596,6 +807,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.workspace_menu = ctk.CTkOptionMenu(
             self.sidebar,
             values=[],
+            command=lambda _value: self.refresh_sidebar_file_structure_button(),
             corner_radius=RADIUS_MD,
             height=sidebar_menu_height,
             font=sidebar_compact_font,
@@ -965,10 +1177,203 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         award_root = _clean(award_root)
         if not award_root or not os.path.isdir(award_root):
             return ""
-        candidate = os.path.join(award_root, "initialize.py")
-        if os.path.isfile(candidate):
-            return candidate
+        for file_name in ("运行此文件.py", "initialize.py"):
+            candidate = os.path.join(award_root, file_name)
+            if os.path.isfile(candidate):
+                return candidate
         return ""
+
+    def get_award_template_result_path(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".award_template_creation_result.json")
+
+    def clear_award_template_result_file(self):
+        path = self.get_award_template_result_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def reload_award_config_runtime(self):
+        global AWARD_FOLDER_MAP
+        importlib.reload(award_config_module)
+        AWARD_FOLDER_MAP = award_config_module.AWARD_FOLDER_MAP
+        if hasattr(self, "award_menu"):
+            labels = award_config_module.get_award_labels() or ["无可用奖项"]
+            self.award_menu.configure(values=labels)
+        return True
+
+    def open_award_template_guide(self, context=None):
+        context = context or self.award_template_guide_context or {}
+        if not context:
+            return
+        self.award_template_guide_context = dict(context)
+        try:
+            if self.award_template_guide_window and self.award_template_guide_window.winfo_exists():
+                try:
+                    self.award_template_guide_window.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        win = ctk.CTkToplevel(self)
+        self.award_template_guide_window = win
+        try:
+            win.title("新建奖项模板 · 下一步")
+        except Exception:
+            pass
+        win.geometry("560x520")
+        win.configure(fg_color=APP_BG)
+        try:
+            win.transient(self)
+        except Exception:
+            pass
+
+        award_name = _clean(context.get("award_name"))
+        workspace_name = _clean(context.get("workspace_name"))
+        year_text = _clean(context.get("year_text"))
+        award_root = _clean(context.get("award_root"))
+        workspace_root = _clean(context.get("workspace_root"))
+        blueprint_path = _clean(context.get("blueprint_path"))
+        step0_runner_path = _clean(context.get("step0_runner_path"))
+        award_initialize_runner_path = _clean(context.get("award_initialize_runner_path"))
+        file_structure_saved = bool(context.get("file_structure_saved"))
+
+        header = ctk.CTkFrame(win, fg_color=APP_BG)
+        header.pack(fill="x", padx=16, pady=(16, 8))
+        ctk.CTkLabel(header, text="新建奖项模板已完成", text_color=TEXT_PRIMARY, font=ui_font(18, "bold")).pack(anchor="w")
+        subtitle = f"{award_name} · {year_text} · {workspace_name}" if year_text else f"{award_name} · {workspace_name}"
+        ctk.CTkLabel(header, text=subtitle, text_color=TEXT_MUTED, font=ui_font(13)).pack(anchor="w", pady=(4, 0))
+
+        body = ctk.CTkFrame(win, fg_color=SURFACE_BG, corner_radius=RADIUS_LG)
+        body.pack(fill="both", expand=True, padx=16, pady=8)
+
+        step1_state = "已完成" if file_structure_saved else "未完成"
+        step1_color = SUCCESS if file_structure_saved else TEXT_MUTED
+        ctk.CTkLabel(body, text=f"Step 1 · 自定义文件结构（{step1_state}）", text_color=step1_color, font=ui_font(14, "bold")).pack(anchor="w", padx=14, pady=(14, 6))
+        ctk.CTkLabel(body, text="在 terminal 左侧点击“文件结构”按钮，编辑并保存 文件结构.xlsx。保存后会自动重读最新结构。", text_color=TEXT_MUTED, font=ui_font(12), wraplength=520, justify="left").pack(anchor="w", padx=14)
+        ctk.CTkButton(body, text="打开文件结构编辑器", command=self.open_sidebar_file_structure_editor, height=36, **button_primary_style()).pack(fill="x", padx=14, pady=(10, 0))
+
+        ctk.CTkLabel(body, text="Step 2 · 初始化 / 部署", text_color=TEXT_PRIMARY, font=ui_font(14, "bold")).pack(anchor="w", padx=14, pady=(18, 6))
+        ctk.CTkLabel(body, text="可先做奖项级初始化（award_root），再运行工作区 step_0 部署脚本。", text_color=TEXT_MUTED, font=ui_font(12), wraplength=520, justify="left").pack(anchor="w", padx=14)
+
+        action_row = ctk.CTkFrame(body, fg_color=SURFACE_BG)
+        action_row.pack(fill="x", padx=14, pady=(10, 0))
+
+        def open_folder(path):
+            path = _clean(path)
+            if not path or not os.path.isdir(path):
+                messagebox.showwarning("未找到文件夹", f"未找到文件夹:\n{path}")
+                return
+            try:
+                os.startfile(path)
+            except Exception as exc:
+                messagebox.showerror("打开失败", str(exc))
+
+        def open_code_file(path):
+            path = _clean(path)
+            if not path or not os.path.isfile(path):
+                messagebox.showwarning("未找到文件", f"未找到文件:\n{path}")
+                return
+            try:
+                self.open_file(path)
+            except Exception as exc:
+                messagebox.showerror("打开失败", str(exc))
+
+        btns1 = ctk.CTkFrame(action_row, fg_color=SURFACE_BG)
+        btns1.pack(fill="x")
+        ctk.CTkButton(btns1, text="打开工作区文件夹", command=lambda: open_folder(workspace_root), height=34, **button_secondary_style()).pack(fill="x", pady=(0, 8))
+        ctk.CTkButton(btns1, text="打开 step_0 · 运行此文件.py", command=lambda: open_code_file(step0_runner_path), height=34, **button_secondary_style()).pack(fill="x", pady=(0, 8))
+        ctk.CTkButton(btns1, text="打开奖项初始化 · 运行此文件.py", command=lambda: open_code_file(award_initialize_runner_path), height=34, **button_secondary_style()).pack(fill="x")
+
+        if blueprint_path:
+            ctk.CTkLabel(body, text=f"文件结构路径：{blueprint_path}", text_color=TEXT_MUTED, font=ui_font(11), wraplength=520, justify="left").pack(anchor="w", padx=14, pady=(16, 0))
+        if workspace_root:
+            ctk.CTkLabel(body, text=f"工作区路径：{workspace_root}", text_color=TEXT_MUTED, font=ui_font(11), wraplength=520, justify="left").pack(anchor="w", padx=14, pady=(6, 0))
+        if award_root:
+            ctk.CTkLabel(body, text=f"奖项根目录：{award_root}", text_color=TEXT_MUTED, font=ui_font(11), wraplength=520, justify="left").pack(anchor="w", padx=14, pady=(6, 0))
+
+        footer = ctk.CTkFrame(win, fg_color=APP_BG)
+        footer.pack(fill="x", padx=16, pady=(0, 16))
+        ctk.CTkButton(footer, text="关闭", command=win.destroy, height=34, **button_secondary_style()).pack(side="right")
+
+    def apply_created_award_workspace(self, payload):
+        award_name = _clean((payload or {}).get("award_name"))
+        workspace_name = _clean((payload or {}).get("workspace_name"))
+        if not award_name or not workspace_name:
+            return
+        try:
+            self.reload_award_config_runtime()
+        except Exception:
+            pass
+        year_text = self.get_workspace_year(workspace_name) or _clean((payload or {}).get("year_text")) or str(datetime.datetime.now().year)
+        try:
+            self.award_menu.set(award_name)
+        except Exception:
+            pass
+        self.update_year_menu(award_name, selected_year=year_text, selected_workspace=workspace_name)
+        self.refresh_sidebar_resource_browser(award_name, year_text)
+        self.refresh_sidebar_config_browser(award_name, year_text)
+        self.refresh_sidebar_file_structure_button(award_name, year_text)
+
+        award_root = _clean((payload or {}).get("award_root")) or self.get_sidebar_award_root(award_name)
+        workspace_root = _clean((payload or {}).get("workspace_root")) or os.path.join(get_award_folder(award_name), workspace_name)
+        _, bp_path = self.get_selected_workspace_blueprint_path(award_name, year_text)
+        step0_runner_path = os.path.join(workspace_root, "step_0_前期准备", "运行此文件.py")
+        award_initialize_runner_path = self.get_award_initialize_script_path(award_root)
+        self.award_template_guide_context = {
+            "award_name": award_name,
+            "workspace_name": workspace_name,
+            "year_text": year_text,
+            "award_root": award_root,
+            "workspace_root": workspace_root,
+            "blueprint_path": bp_path,
+            "step0_runner_path": step0_runner_path,
+            "award_initialize_runner_path": award_initialize_runner_path,
+            "file_structure_saved": False,
+        }
+        self.safe_after(200, self.open_award_template_guide, self.award_template_guide_context)
+
+    def poll_award_template_creation_result(self):
+        self.award_template_creation_poll_job = None
+        result_path = self.get_award_template_result_path()
+        if os.path.isfile(result_path):
+            try:
+                with open(result_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception:
+                payload = None
+            else:
+                self.clear_award_template_result_file()
+                self.apply_created_award_workspace(payload)
+                return
+        if time.time() < self.award_template_creation_deadline:
+            self.award_template_creation_poll_job = self.safe_after(1200, self.poll_award_template_creation_result)
+
+    def on_create_award_template_click(self):
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "create_award_workspace_template.py")
+        if not os.path.isfile(script_path):
+            messagebox.showwarning("未找到脚本", f"未找到新建奖项模板脚本：\n{script_path}")
+            return
+        try:
+            self.cancel_after_handle(self.award_template_creation_poll_job)
+            self.award_template_creation_poll_job = None
+            self.award_template_creation_deadline = time.time() + 600
+            self.clear_award_template_result_file()
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            subprocess.Popen(
+                [sys.executable, script_path],
+                cwd=os.path.dirname(script_path),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            self.award_template_creation_poll_job = self.safe_after(1200, self.poll_award_template_creation_result)
+        except Exception as exc:
+            messagebox.showerror("启动失败", str(exc))
 
     def on_sidebar_initialize_click(self):
         award_name = self.award_menu.get()
@@ -979,7 +1384,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             return
         script_path = self.get_award_initialize_script_path(award_root)
         if not script_path:
-            messagebox.showwarning("未找到初始化脚本", f"未在奖项根目录找到 initialize.py：\n{award_root}")
+            messagebox.showwarning("未找到初始化脚本", f"未在奖项根目录找到 运行此文件.py 或 initialize.py：\n{award_root}")
             return
         self.sidebar_initialize_context = {"active": True, "award": award_name, "year": year_text, "armed_at": time.time()}
         threading.Thread(
@@ -1138,6 +1543,29 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.sidebar_open_config_file_btn.configure(state=file_state)
         self.sidebar_select_config_json_btn.configure(state=json_state)
         self.sidebar_apply_config_json_btn.configure(state=apply_state)
+        self.refresh_sidebar_file_structure_button(award_name, year_text)
+
+    def get_selected_workspace_blueprint_path(self, award_name=None, year_text=None):
+        selected_award = award_name or self.award_menu.get()
+        selected_year = year_text or self.year_menu.get()
+        workspace_name = self.resolve_workspace_menu_selection(selected_award, selected_year)
+        if not workspace_name or workspace_name == "无可用工作区":
+            return "", ""
+        workspace_root = os.path.join(get_award_folder(selected_award), workspace_name)
+        bp1 = os.path.join(workspace_root, "资料", "代码", "工作区设置", "文件结构.xlsx")
+        bp2 = os.path.join(workspace_root, "工作区设置", "文件结构.xlsx")
+        if os.path.isfile(bp1):
+            return workspace_name, bp1
+        if os.path.isfile(bp2):
+            return workspace_name, bp2
+        return workspace_name, ""
+
+    def refresh_sidebar_file_structure_button(self, award_name=None, year_text=None):
+        if not hasattr(self, "sidebar_open_file_structure_btn"):
+            return
+        workspace_name, bp_path = self.get_selected_workspace_blueprint_path(award_name, year_text)
+        state = "normal" if (workspace_name and bp_path and os.path.isfile(bp_path)) else "disabled"
+        self.sidebar_open_file_structure_btn.configure(state=state)
 
     def browse_sidebar_config_json(self):
         award_name = self.award_menu.get()
@@ -1210,6 +1638,125 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
             return
         self._ensure_sidebar_config_editor(award_name, year_text)
+
+    def _ensure_file_structure_editor(self, award_name, year_text):
+        workspace_name, bp_path = self.get_selected_workspace_blueprint_path(award_name, year_text)
+        normalized_year = _clean(year_text)
+        if not workspace_name or workspace_name == "无可用工作区":
+            messagebox.showinfo("提示", "请先选择有效工作区。")
+            return None
+        if not bp_path or not os.path.isfile(bp_path):
+            messagebox.showwarning("未找到文件结构", f"未找到 文件结构.xlsx:\n{bp_path or workspace_name}")
+            return None
+        if self.file_structure_editor_window and self.file_structure_editor_window.winfo_exists():
+            try:
+                same_file = os.path.normcase(self.file_structure_editor_window.blueprint_xlsx_path) == os.path.normcase(os.path.normpath(bp_path))
+                if same_file:
+                    self.file_structure_editor_window.focus()
+                    self.file_structure_editor_window.lift()
+                    return self.file_structure_editor_window
+                self.file_structure_editor_window.destroy()
+            except Exception:
+                self.file_structure_editor_window = None
+            self.file_structure_editor_window = None
+        try:
+            self.file_structure_editor_window = FileStructureEditorWindow(
+                self,
+                award_name=award_name,
+                year_text=normalized_year,
+                workspace_name=workspace_name,
+                blueprint_xlsx_path=bp_path,
+                on_saved=lambda _path, a=award_name, w=workspace_name: self.on_file_structure_saved(a, w),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开文件结构编辑器失败", str(exc))
+            self.file_structure_editor_window = None
+            return None
+        return self.file_structure_editor_window
+
+    def open_file_structure_editor_for_tab(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return None
+        manifest = tab_data.get("manifest", {}) or {}
+        bp_path = tab_data.get("bp_path", "")
+        workspace_root = manifest.get("workspace_root", "")
+        workspace_name = os.path.basename(workspace_root) or tab_id
+        award_name = tab_data.get("award") or self.award_menu.get()
+        year_text = self.get_workspace_year(workspace_name)
+        if not bp_path or not os.path.isfile(bp_path):
+            messagebox.showwarning("未找到文件结构", f"未找到 文件结构.xlsx:\n{bp_path or workspace_name}")
+            return None
+        if self.file_structure_editor_window and self.file_structure_editor_window.winfo_exists():
+            try:
+                same_file = os.path.normcase(self.file_structure_editor_window.blueprint_xlsx_path) == os.path.normcase(os.path.normpath(bp_path))
+                if same_file:
+                    self.file_structure_editor_window.focus()
+                    self.file_structure_editor_window.lift()
+                    return self.file_structure_editor_window
+                self.file_structure_editor_window.destroy()
+            except Exception:
+                self.file_structure_editor_window = None
+            self.file_structure_editor_window = None
+        try:
+            self.file_structure_editor_window = FileStructureEditorWindow(
+                self,
+                award_name=award_name,
+                year_text=year_text,
+                workspace_name=workspace_name,
+                blueprint_xlsx_path=bp_path,
+                on_saved=lambda _path, a=award_name, w=workspace_name: self.on_file_structure_saved(a, w),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开文件结构编辑器失败", str(exc))
+            self.file_structure_editor_window = None
+            return None
+        return self.file_structure_editor_window
+
+    def open_sidebar_file_structure_editor(self):
+        award_name = self.award_menu.get()
+        year_text = _clean(self.year_menu.get())
+        if not award_name or not year_text or year_text == "无可用年份":
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return
+        self._ensure_file_structure_editor(award_name, year_text)
+
+    def on_file_structure_saved(self, award_name, workspace_name):
+        normalized_award = _clean(award_name)
+        normalized_workspace = _clean(workspace_name)
+        if self.award_template_guide_context:
+            try:
+                if (
+                    _clean(self.award_template_guide_context.get("award_name")) == normalized_award
+                    and _clean(self.award_template_guide_context.get("workspace_name")) == normalized_workspace
+                ):
+                    self.award_template_guide_context["file_structure_saved"] = True
+                    self.safe_after(120, self.open_award_template_guide, self.award_template_guide_context)
+            except Exception:
+                pass
+        for tab_id, tab_data in list(self.active_tabs_data.items()):
+            manifest = tab_data.get("manifest", {}) or {}
+            tab_award = _clean(tab_data.get("award"))
+            workspace_root = _clean(manifest.get("workspace_root"))
+            workspace_folder = os.path.basename(workspace_root) if workspace_root else ""
+            if tab_award != normalized_award or workspace_folder != normalized_workspace:
+                continue
+            try:
+                self.rebuild_workspace_manifest_for_tab(tab_id)
+            except Exception:
+                pass
+
+        saved_year = self.get_workspace_year(normalized_workspace)
+        current_award = _clean(self.award_menu.get())
+        current_year = _clean(self.year_menu.get())
+        if current_award == normalized_award and saved_year and saved_year == current_year:
+            try:
+                self.update_workspace_menu(normalized_award, saved_year, selected_workspace=normalized_workspace)
+                self.refresh_sidebar_resource_browser(normalized_award, saved_year)
+                self.refresh_sidebar_config_browser(normalized_award, saved_year)
+            except Exception:
+                pass
+        self.refresh_sidebar_file_structure_button(normalized_award, saved_year or current_year)
 
     def apply_sidebar_config_json(self):
         award_name = self.award_menu.get()
@@ -1884,6 +2431,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.update_workspace_menu(self.award_menu.get(), selected_year)
         self.refresh_sidebar_resource_browser(self.award_menu.get(), selected_year)
         self.refresh_sidebar_config_browser(self.award_menu.get(), selected_year)
+        self.refresh_sidebar_file_structure_button(self.award_menu.get(), selected_year)
 
     def prompt_display_name(self, title, prompt, initial_value="", allow_empty=True):
         try:
@@ -2016,9 +2564,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         else:
             self.workspace_menu.configure(values=["无可用工作区"])
             self.workspace_menu.set("无可用工作区")
+        self.refresh_sidebar_file_structure_button(selected_award, selected_year)
 
     def run_delete_workspace_script(self, workspace_root):
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "delete_workspace.py")
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "delete_workspace.py")
         if not os.path.isfile(script_path):
             return False, f"未找到删除脚本: {script_path}"
         result = subprocess.run(
@@ -2412,6 +2961,30 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
 
     def reconcile_manifest(self, manifest):
         return reconcile_filesystem(manifest)
+
+    def rebuild_workspace_manifest_for_tab(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return False
+        manifest = tab_data.get("manifest", {}) or {}
+        workspace_root = manifest.get("workspace_root", "")
+        bp_path = tab_data.get("bp_path", "") or manifest.get("bp_path", "")
+        award_label = tab_data.get("award", "")
+        if not workspace_root or not bp_path:
+            return False
+        new_manifest = build_workspace_manifest(bp_path, workspace_root, get_manifest_award(award_label))
+        new_manifest = reconcile_filesystem(new_manifest)
+        try:
+            self.sync_workspace_archive_metadata(new_manifest)
+        except Exception:
+            pass
+        tab_data["manifest"] = new_manifest
+        self.render_tab_content(tab_id)
+        self.render_workspace_stepper(tab_id)
+        self.render_gantt_tab(tab_id)
+        self.render_calc_results_panel(tab_id)
+        self.refresh_workspace_tab_title(tab_id)
+        return True
 
     def make_timeline_id(self, prefix):
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")

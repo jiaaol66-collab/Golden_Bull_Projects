@@ -126,6 +126,7 @@ def rev_copy_file(dst, src, replace=0):       # 从源路径（dst)复制一个�
     if not os.path.exists(src):
         print(f'源文件{src}不存在！无法复制。')
         tag_False = 1
+        return False
     else:
         if replace == 1:  # 当replace = 1时，如果文件已存在则进行替换(多为输出的文件)，其中代码和说明文件不进行替换。(除了更新文件)
             if os.path.exists(dst):
@@ -142,7 +143,7 @@ def rev_copy_file(dst, src, replace=0):       # 从源路径（dst)复制一个�
                 print(f'已复制{src} ---> {dst}')
         else:
             print(f'{dst}已有文件，不进行复制')
-    return tag_False
+        return True
 
 
 if os.path.exists('test.py'):
@@ -191,18 +192,23 @@ info = info.fillna('.')
 code = info[info['保存在资料中的名称']!='.'][['步骤', '工作区文件夹', '子文件夹1', '子文件夹2', '相应代码和说明文件', '代码/说明', '代码子文件夹', '保存在资料中的名称']].copy()
 default = {'代码':'default_code.py', '说明':'readme.docx'}
 for idx, row in code.iterrows():
-    step = 'step_' + str(row['步骤']) + ' ' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
     dst_name = row['相应代码和说明文件']
     sub_dir1 = row['子文件夹1']
     sub_dir2 = row['子文件夹2']
     sav_name = row['保存在资料中的名称']
     sub_code = row['代码子文件夹']
     code_istr = row['代码/说明']
-    tof = rev_copy_file(f'{step}/{sub_dir1}/{sub_dir2}/{dst_name}',f'资料/{code_istr}/{sub_code}/{sav_name}',1)
-    if not tof:
+    step_underscore = 'step_' + str(row['步骤']) + '_' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
+    step_space = 'step_' + str(row['步骤']) + ' ' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
+    dst_path_underscore = f'{step_underscore}/{sub_dir1}/{sub_dir2}/{dst_name}'
+    dst_path_space = f'{step_space}/{sub_dir1}/{sub_dir2}/{dst_name}'
+    dst_dir_underscore = os.path.dirname(dst_path_underscore)
+    dst_path = dst_path_underscore if os.path.exists(dst_dir_underscore) else dst_path_space
+
+    copied = rev_copy_file(dst_path, f'资料/{code_istr}/{sub_code}/{sav_name}', 1)
+    if not copied:
         default_code = default[code_istr]
-        rev_copy_file(f'{step}/{sub_dir1}/{sub_dir2}/{dst_name}',f'资料/{code_istr}/{sub_code}/{default_code}',1)
-        tag_False = 0
+        rev_copy_file(dst_path, f'资料/{code_istr}/{sub_code}/{default_code}', 1)
         
 
 with open('参评信息/保存修改信息.txt', 'a', encoding='utf-8') as f:

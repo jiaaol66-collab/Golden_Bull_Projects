@@ -2,11 +2,14 @@ import json
 import os
 import sys
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+os.chdir(REPO_ROOT)
+
 from award_config import AWARD_FOLDER_MAP
 from userlib.tools import delete_file
 
-
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 LOGS_ROOT = os.path.join(REPO_ROOT, "logs")
 
 

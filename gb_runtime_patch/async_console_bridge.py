@@ -68,20 +68,39 @@ def _finalize_live_carriage(stream, log_handle, state, text):
 def _consume_stream_text(stream, log_handle, state, text):
     if not text:
         return
-    for ch in text:
-        if ch == "\r":
-            # tqdm 一类覆盖式进度输出会不断用 \r 重写同一行；
-            # 这里只保留最新一版，避免日志里落成很多条重复进度。
+    pending_cr = bool(state.get("pending_cr"))
+    if pending_cr:
+        state["pending_cr"] = False
+        if text.startswith("\n"):
+            line = state["line_buffer"] if state["line_buffer"] else state["carriage_line"]
+            _finalize_live_carriage(stream, log_handle, state, line)
+            state["line_buffer"] = ""
+            state["carriage_line"] = ""
+            text = text[1:]
+        else:
             state["carriage_line"] = state["line_buffer"] if state["line_buffer"] else state["carriage_line"]
             _write_live_carriage(stream, state, state["carriage_line"])
             state["line_buffer"] = ""
+
+    for ch in text:
+        if ch == "\r":
+            state["pending_cr"] = True
             continue
+
         if ch == "\n":
+            state["pending_cr"] = False
             line = state["line_buffer"] if state["line_buffer"] else state["carriage_line"]
             _finalize_live_carriage(stream, log_handle, state, line)
             state["line_buffer"] = ""
             state["carriage_line"] = ""
             continue
+
+        if state.get("pending_cr"):
+            state["pending_cr"] = False
+            state["carriage_line"] = state["line_buffer"] if state["line_buffer"] else state["carriage_line"]
+            _write_live_carriage(stream, state, state["carriage_line"])
+            state["line_buffer"] = ""
+
         if state["carriage_line"] and not state["line_buffer"]:
             state["carriage_line"] = ""
         state["line_buffer"] += ch
@@ -106,7 +125,7 @@ def _emit_banner(log_handle, script_path, working_dir, log_path, python_path):
 
 def _stream_process_output(process, log_handle):
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-    state = {"line_buffer": "", "carriage_line": "", "live_width": 0, "carriage_visible": False}
+    state = {"line_buffer": "", "carriage_line": "", "live_width": 0, "carriage_visible": False, "pending_cr": False}
     stdout = process.stdout
     if stdout is None:
         return
@@ -129,6 +148,11 @@ def _stream_process_output(process, log_handle):
     tail = decoder.decode(b"", final=True)
     if tail:
         _consume_stream_text(sys.stdout, log_handle, state, tail)
+    if state.get("pending_cr") and state.get("line_buffer"):
+        state["pending_cr"] = False
+        state["carriage_line"] = state["line_buffer"] if state["line_buffer"] else state["carriage_line"]
+        _write_live_carriage(sys.stdout, state, state["carriage_line"])
+        state["line_buffer"] = ""
     if state["line_buffer"]:
         _finalize_live_carriage(sys.stdout, log_handle, state, state["line_buffer"])
     elif state["carriage_line"]:

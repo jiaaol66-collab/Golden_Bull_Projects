@@ -138,13 +138,13 @@ for j in range(0, 10):
         break
 
 make_dir(path_t, 1)
-copy_file('step_0 前期准备', path_t + r'/step_0 前期准备')
+copy_file('step_0_前期准备', path_t + r'/step_0_前期准备')
 
 """—————————————————————————— 自定义keep_files ——————————————————————————————"""
-delete_except(path_t + '/step_0 前期准备', ['运行此文件.py'])
+delete_except(path_t + '/step_0_前期准备', ['运行此文件.py'])
 copy_file('资料', path_t + r'/资料')
 
-run('运行此文件.py', path_t+'/step_0 前期准备/')
+run('运行此文件.py', path_t+'/step_0_前期准备/')
 
 if os.path.exists(path_t + '/参评信息/年份信息.txt'):
     with open(path_t + '/参评信息/年份信息.txt', 'r') as f:

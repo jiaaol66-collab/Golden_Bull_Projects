@@ -21,12 +21,27 @@ def _quote_sql_string(value):
 
 
 def find_private_db(current_file, yr):
+    name = str(os.getenv("PRIVATE_DB_NAME") or "").strip() or "DB_PRIVATE.duckdb"
+
+    direct = str(os.getenv("PRIVATE_DB_PATH") or "").strip()
+    if direct:
+        direct_path = Path(os.path.expandvars(os.path.expanduser(direct))).resolve()
+        if direct_path.exists():
+            return direct_path
+
+    root = str(os.getenv("PRIVATE_DB_ROOT") or "").strip()
+    if root:
+        root_path = Path(os.path.expandvars(os.path.expanduser(root))).resolve()
+        candidate = (root_path / "数据库" / str(yr) / name).resolve()
+        if candidate.exists():
+            return candidate
+
     current_path = Path(current_file).resolve()
     candidates = []
     seen = set()
 
     for parent in current_path.parents:
-        candidate = (parent / '数据库' / str(yr) / 'DB_PRIVATE.duckdb').resolve()
+        candidate = (parent / "数据库" / str(yr) / name).resolve()
         if candidate in seen:
             continue
         seen.add(candidate)
@@ -34,8 +49,8 @@ def find_private_db(current_file, yr):
         if candidate.exists():
             return candidate
 
-    candidate_text = '\n'.join(str(p) for p in candidates[:10])
-    raise FileNotFoundError(f'未找到 DB_PRIVATE.duckdb，可检查以下路径:\n{candidate_text}')
+    candidate_text = "\n".join(str(p) for p in candidates[:10])
+    raise FileNotFoundError(f"未找到 {name}，可检查以下路径:\n{candidate_text}")
 
 
 _LOGGED_DB_PATHS = set()
@@ -150,6 +165,49 @@ def read_private_table(current_file, yr, table_name, columns=None, where=None, d
     return df
 
 
+def _looks_like_numpy_ndarray(value) -> bool:
+    t = type(value)
+    return getattr(t, "__module__", "") == "numpy" and getattr(t, "__name__", "") == "ndarray"
+
+
+def _normalize_cell_for_duckdb(value):
+    if _looks_like_numpy_ndarray(value):
+        try:
+            return value.tolist()
+        except Exception:
+            try:
+                return list(value)
+            except Exception:
+                return value
+    if isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def _normalize_object_columns_for_duckdb(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame) or df.shape[1] == 0:
+        return df
+
+    object_cols = [c for c in df.columns if str(df[c].dtype) == "object"]
+    if not object_cols:
+        return df
+
+    df_out = df
+    for col in object_cols:
+        s = df_out[col]
+        sample = s.dropna().head(50).tolist()
+        if not sample:
+            continue
+        need = any(_looks_like_numpy_ndarray(v) or isinstance(v, tuple) for v in sample)
+        if not need:
+            continue
+        if df_out is df:
+            df_out = df.copy()
+        df_out[col] = df_out[col].map(_normalize_cell_for_duckdb)
+
+    return df_out
+
+
 def write_private_table(current_file, yr, table_name, df, replace=True, log=None):
     try:
         import duckdb
@@ -185,7 +243,8 @@ def write_private_table(current_file, yr, table_name, df, replace=True, log=None
     con = _connect_write_with_retry(duckdb, db_path, log)
     try:
         _ensure_schema(con)
-        con.register('df_private_write', df)
+        df_to_write = _normalize_object_columns_for_duckdb(df)
+        con.register('df_private_write', df_to_write)
         try:
             if replace:
                 con.execute(f'create or replace table {quoted_table} as select * from df_private_write')

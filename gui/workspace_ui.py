@@ -7,8 +7,14 @@ import time
 
 import customtkinter as ctk
 
-from style_config import *
-from motion import smooth_scroll_to
+try:
+    from .style_config import *
+    from .motion import smooth_scroll_to
+except Exception:
+    from style_config import *
+    from motion import smooth_scroll_to
+from openpyxl import load_workbook
+from award_config import get_manifest_award
 
 try:
     import duckdb
@@ -23,6 +29,29 @@ def _clean_text(value):
     return "" if text in (".", "None") else text
 
 
+def _parse_run_order(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value:
+            return None
+        if value.is_integer():
+            return int(value)
+        return None
+    text = _clean_text(value)
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if re.match(r"^\d+\.0+$", text):
+        return int(float(text))
+    return None
+
+
 def _natural_sort_key(text):
     parts = re.split(r"(\d+)", _clean_text(text).lower())
     key = []
@@ -34,6 +63,21 @@ def _natural_sort_key(text):
         else:
             key.append((1, part))
     return tuple(key)
+
+
+def _extract_step_title(*texts):
+    for raw in texts:
+        text = _clean_text(raw).replace("/", os.sep).replace("\\", os.sep)
+        if not text:
+            continue
+        first_part = text.split(os.sep, 1)[0]
+        if first_part.lower().startswith("step_"):
+            return first_part
+    for raw in texts:
+        text = _clean_text(raw)
+        if text:
+            return text
+    return "未命名步骤"
 
 
 class WorkspaceUIMixin:
@@ -1064,6 +1108,15 @@ class WorkspaceUIMixin:
                 font=ui_font(11),
             ).pack(anchor="w", padx=4, pady=(4, 0))
 
+        ctk.CTkButton(
+            control_col,
+            text="编辑文件结构",
+            height=HEIGHT_BUTTON_SM,
+            corner_radius=RADIUS_MD,
+            command=lambda tid=tab_id: self.open_file_structure_editor_for_tab(tid),
+            **button_secondary_style(),
+        ).pack(fill="x", pady=(8, 0))
+
         step_title_row = ctk.CTkFrame(step_frame, fg_color="transparent")
         step_title_row.pack(fill="x", padx=10, pady=(10, 4))
         ctk.CTkLabel(step_title_row, text="步骤脚本", text_color=TEXT_PRIMARY, font=ui_font(15, "bold")).pack(side="left")
@@ -1072,6 +1125,11 @@ class WorkspaceUIMixin:
         tab_data["run_timer_label"] = timer_label
         self.refresh_run_timer_label(tab_id)
         ordered_steps = self.get_manifest_steps_in_order(manifest)
+        if ordered_steps:
+            tab_data["_step_manifest_retrying"] = False
+        elif tab_data.get("bp_path") and not tab_data.get("_step_manifest_retrying"):
+            tab_data["_step_manifest_retrying"] = True
+            self.safe_after(0, self.rebuild_workspace_manifest_for_tab, tab_id)
 
         ctk.CTkLabel(
             step_title_row,
@@ -1106,8 +1164,14 @@ class WorkspaceUIMixin:
             text = display_label if step.get("exists") else f"[缺失] {display_label}"
             state = "normal" if step.get("exists") else "disabled"
 
+            row = ctk.CTkFrame(step_scroll, fg_color="transparent")
+            row.pack(fill="x", padx=10, pady=5)
+            row.grid_columnconfigure(0, weight=1)
+            row.grid_columnconfigure(1, weight=0)
+            left_cell = ctk.CTkFrame(row, fg_color="transparent")
+            left_cell.grid(row=0, column=0, sticky="ew")
             cb = ctk.CTkCheckBox(
-                step_scroll,
+                left_cell,
                 text=text,
                 variable=var,
                 onvalue="1",
@@ -1116,7 +1180,25 @@ class WorkspaceUIMixin:
                 text_color=state_color,
                 **checkbox_style(),
             )
-            cb.pack(fill="x", padx=10, pady=5, anchor="w")
+            cb.pack(anchor="w")
+            right_cell = ctk.CTkFrame(
+                row,
+                fg_color="transparent",
+                width=WIDTH_ACTION_BUTTON_XS + 8,
+                height=HEIGHT_ACTION_BUTTON_XS,
+            )
+            right_cell.grid(row=0, column=1, sticky="e")
+            right_cell.grid_propagate(False)
+            ctk.CTkButton(
+                right_cell,
+                text="打开",
+                width=WIDTH_ACTION_BUTTON_XS,
+                height=HEIGHT_BUTTON_XS,
+                corner_radius=RADIUS_SM,
+                state="normal" if step.get("exists") else "disabled",
+                command=lambda p=step.get("abs_path"): self.open_file(p),
+                **button_secondary_style(),
+            ).place(relx=1.0, rely=0.5, anchor="e")
             tab_data["step_widgets"][step_id] = cb
 
         if tab_data.get("current_step_id") in tab_data.get("step_widgets", {}):
@@ -1205,6 +1287,29 @@ class WorkspaceUIMixin:
             "abs_path": abs_path,
             "exists": os.path.isfile(abs_path),
             "is_fixed_backup": True,
+        }
+
+    def get_award_readme_item(self, workspace_root):
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        award_root = ""
+        if workspace_root:
+            try:
+                rel_to_project = os.path.relpath(os.path.abspath(workspace_root), project_root)
+                first_part = rel_to_project.split(os.sep, 1)[0]
+                if first_part and first_part not in {".", ".."}:
+                    award_root = os.path.join(project_root, first_part)
+            except Exception:
+                award_root = ""
+        if not award_root and workspace_root:
+            award_root = os.path.dirname(os.path.abspath(workspace_root))
+        rel_path = "README.md"
+        abs_path = os.path.join(award_root, rel_path) if award_root else rel_path
+        return {
+            "name": "README.md",
+            "display_label": "奖项 README",
+            "rel_path": rel_path,
+            "abs_path": abs_path,
+            "exists": os.path.isfile(abs_path),
         }
 
     def render_code_folder_tab(self, tab_id, parent):
@@ -1322,11 +1427,7 @@ class WorkspaceUIMixin:
 
         step_code_folders = sorted(
             manifest.get("step_code_folders", []),
-            key=lambda folder: (
-                (folder.get("order") is None),
-                folder.get("order") or 999999,
-                _natural_sort_key(folder.get("folder_rel_path", "")),
-            ),
+            key=lambda folder: _natural_sort_key(folder.get("folder_rel_path", "")),
         )
         if not step_code_folders:
             ctk.CTkLabel(
@@ -1352,7 +1453,11 @@ class WorkspaceUIMixin:
                 scroll_target_widget = card
             ctk.CTkLabel(
                 card,
-                text=folder.get("display_label") or folder.get("folder_name", "步骤文件夹"),
+                text=_extract_step_title(
+                    folder.get("folder_rel_path", ""),
+                    folder.get("folder_name", ""),
+                    folder.get("display_label", ""),
+                ),
                 text_color=TEXT_PRIMARY,
                 font=ui_font(14, "bold"),
                 wraplength=WRAP_FOLDER_CARD,
@@ -1440,6 +1545,520 @@ class WorkspaceUIMixin:
         run_info["is_manual_code"] = True
         self.run_script_thread(run_info, tab_id)
 
+    def _get_file_structure_column_names(self):
+        return [
+            "工作区名",
+            "步骤",
+            "工作区文件夹",
+            "子文件夹1",
+            "子文件夹2",
+            "子文件夹3",
+            "子文件夹4",
+            "运行顺序",
+            "代码/说明",
+            "相应代码和说明文件",
+            "保存在资料中的名称",
+            "备注",
+            "其他",
+            "输出文件",
+            "对应代码",
+        ]
+
+    def _normalize_file_structure_header(self, raw_header):
+        header = []
+        for value in list(raw_header or []):
+            text = _clean_text(value)
+            header.append(text)
+        return header
+
+    def _ensure_file_structure_columns(self, ws, required_columns):
+        header_values = [cell.value for cell in ws[1]]
+        header = self._normalize_file_structure_header(header_values)
+        existing = {name: idx for idx, name in enumerate(header) if name}
+        appended = []
+        for name in required_columns:
+            if name and name not in existing:
+                appended.append(name)
+        if not appended:
+            return header, existing, False
+        start_col = len(header) + 1
+        for offset, name in enumerate(appended):
+            ws.cell(row=1, column=start_col + offset, value=name)
+            header.append(name)
+        existing = {name: idx for idx, name in enumerate(header) if name}
+        return header, existing, True
+
+    def _load_file_structure_pipeline_rows(self, bp_path, award_name):
+        wb = load_workbook(bp_path)
+        if "工作区" not in wb.sheetnames:
+            raise ValueError("未找到工作区 sheet：工作区")
+        ws = wb["工作区"]
+        required_columns = self._get_file_structure_column_names()
+        header, col_map, changed = self._ensure_file_structure_columns(ws, required_columns)
+
+        rows = []
+        current_award = ""
+        max_row = ws.max_row or 1
+        for sheet_row in range(2, max_row + 1):
+            award_cell = ws.cell(row=sheet_row, column=col_map["工作区名"] + 1).value
+            award_text = _clean_text(award_cell)
+            if award_text:
+                current_award = award_text
+            if current_award != award_name:
+                continue
+
+            run_order_cell = ws.cell(row=sheet_row, column=col_map["运行顺序"] + 1).value
+            kind_cell = ws.cell(row=sheet_row, column=col_map["代码/说明"] + 1).value
+            script_cell = ws.cell(row=sheet_row, column=col_map["相应代码和说明文件"] + 1).value
+
+            script_text = _clean_text(script_cell)
+            kind_text = _clean_text(kind_cell)
+            order_num = _parse_run_order(run_order_cell)
+            is_pipeline = order_num is not None and kind_text == "代码" and script_text.lower().endswith(".py")
+            if not is_pipeline:
+                continue
+
+            row_values = {}
+            for name in required_columns:
+                if name == "工作区名":
+                    continue
+                idx = col_map.get(name)
+                if idx is None:
+                    row_values[name] = ""
+                    continue
+                row_values[name] = ws.cell(row=sheet_row, column=idx + 1).value
+
+            rows.append({
+                "sheet_row": sheet_row,
+                "values": row_values,
+            })
+
+        return wb, ws, header, col_map, rows, changed
+
+    def _set_file_structure_dirty(self, tab_id, dirty=True, message=""):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        tab_data["file_structure_dirty"] = bool(dirty)
+        status_var = tab_data.get("file_structure_status_var")
+        if status_var:
+            status_var.set(message or ("有未保存修改" if dirty else "已从文件读取"))
+
+    def _read_file_structure_row_widgets(self, row_widget_info):
+        values = {}
+        for key, widget in (row_widget_info or {}).items():
+            if not widget or not getattr(widget, "winfo_exists", lambda: False)():
+                continue
+            if isinstance(widget, ctk.CTkOptionMenu):
+                values[key] = widget.get().strip()
+            else:
+                try:
+                    values[key] = widget.get().strip()
+                except Exception:
+                    values[key] = ""
+        return values
+
+    def _render_file_structure_rows(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        scroll = tab_data.get("file_structure_scroll")
+        if not scroll or not scroll.winfo_exists():
+            return
+        for widget in scroll.winfo_children():
+            widget.destroy()
+
+        rows = list(tab_data.get("file_structure_rows") or [])
+        if not rows:
+            ctk.CTkLabel(
+                scroll,
+                text="当前未识别到“顺序步骤代码”行。\n请确认 文件结构.xlsx 的“工作区名”块匹配当前奖项（如 私募/公募），且该行满足：运行顺序为数字 + 代码/说明=代码 + 文件名以 .py 结尾。",
+                text_color=TEXT_MUTED,
+                wraplength=WRAP_LEFT_HINT,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=(8, 0))
+            tab_data["file_structure_row_widgets"] = []
+            return
+        row_widgets = []
+
+        column_row_1 = [
+            ("运行顺序", "顺序", 70),
+            ("步骤", "步骤", 70),
+            ("相应代码和说明文件", "代码文件", 260),
+            ("保存在资料中的名称", "保存名", 220),
+            ("代码/说明", "类型", 80),
+        ]
+        column_row_2 = [
+            ("工作区文件夹", "文件夹", 200),
+            ("子文件夹1", "子1", 120),
+            ("子文件夹2", "子2", 120),
+            ("子文件夹3", "子3", 120),
+            ("子文件夹4", "子4", 120),
+            ("对应代码", "对应代码", 180),
+            ("输出文件", "输出文件", 220),
+            ("其他", "其他", 180),
+        ]
+
+        for idx, row_model in enumerate(rows, start=1):
+            card = ctk.CTkFrame(scroll, **panel_card_style())
+            card.pack(fill="x", padx=6, pady=(6, 0))
+
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=10, pady=(10, 6))
+
+            index_label = ctk.CTkLabel(top, text=str(idx), text_color=TEXT_MUTED, width=36, font=ui_font(12, "bold"))
+            index_label.pack(side="left")
+
+            handle = ctk.CTkFrame(top, width=26, height=26, fg_color=ACCENT_SEGMENT_BG, corner_radius=RADIUS_SM, border_width=1, border_color=BORDER)
+            handle.pack(side="left", padx=(6, 10))
+            handle.pack_propagate(False)
+            handle_label = ctk.CTkLabel(handle, text="≡", text_color=TEXT_PRIMARY, font=ui_font(14, "bold"))
+            handle_label.pack(expand=True)
+
+            row1 = ctk.CTkFrame(top, fg_color="transparent")
+            row1.pack(side="left", fill="x", expand=True)
+            row1.grid_columnconfigure(0, weight=0)
+            row1.grid_columnconfigure(1, weight=0)
+            row1.grid_columnconfigure(2, weight=1)
+            row1.grid_columnconfigure(3, weight=1)
+            row1.grid_columnconfigure(4, weight=0)
+
+            widgets = {}
+            for col_idx, (key, label, width) in enumerate(column_row_1):
+                field = ctk.CTkFrame(row1, fg_color="transparent")
+                field.grid(row=0, column=col_idx, sticky="ew", padx=(0, 8))
+                ctk.CTkLabel(field, text=label, text_color=TEXT_MUTED, font=ui_font(10)).pack(anchor="w")
+                entry = ctk.CTkEntry(field, width=width, font=ui_font(12), **input_box_style())
+                entry.pack(fill="x")
+                raw_val = row_model.get("values", {}).get(key, "")
+                if raw_val not in (None, ""):
+                    entry.insert(0, str(raw_val))
+                entry.bind("<KeyRelease>", lambda _e, tid=tab_id: self._set_file_structure_dirty(tid, True))
+                widgets[key] = entry
+
+            bottom = ctk.CTkFrame(card, fg_color="transparent")
+            bottom.pack(fill="x", padx=10, pady=(0, 10))
+
+            row2 = ctk.CTkFrame(bottom, fg_color="transparent")
+            row2.pack(fill="x", expand=True)
+            for c in range(len(column_row_2)):
+                row2.grid_columnconfigure(c, weight=1 if c in {0, 6} else 0)
+
+            for col_idx, (key, label, width) in enumerate(column_row_2):
+                field = ctk.CTkFrame(row2, fg_color="transparent")
+                field.grid(row=0, column=col_idx, sticky="ew", padx=(0, 8))
+                ctk.CTkLabel(field, text=label, text_color=TEXT_MUTED, font=ui_font(10)).pack(anchor="w")
+                entry = ctk.CTkEntry(field, width=width, font=ui_font(12), **input_box_style())
+                entry.pack(fill="x")
+                raw_val = row_model.get("values", {}).get(key, "")
+                if raw_val not in (None, ""):
+                    entry.insert(0, str(raw_val))
+                entry.bind("<KeyRelease>", lambda _e, tid=tab_id: self._set_file_structure_dirty(tid, True))
+                widgets[key] = entry
+
+            note_field = ctk.CTkFrame(bottom, fg_color="transparent")
+            note_field.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(note_field, text="备注", text_color=TEXT_MUTED, font=ui_font(10)).pack(anchor="w")
+            note_entry = ctk.CTkEntry(note_field, font=ui_font(12), **input_box_style())
+            note_entry.pack(fill="x")
+            raw_note = row_model.get("values", {}).get("备注", "")
+            if raw_note not in (None, ""):
+                note_entry.insert(0, str(raw_note))
+            note_entry.bind("<KeyRelease>", lambda _e, tid=tab_id: self._set_file_structure_dirty(tid, True))
+            widgets["备注"] = note_entry
+
+            row_widgets.append({
+                "card": card,
+                "index_label": index_label,
+                "handle": handle,
+                "handle_label": handle_label,
+                "widgets": widgets,
+            })
+
+        tab_data["file_structure_row_widgets"] = row_widgets
+        self._bind_file_structure_drag_events(tab_id)
+
+    def _bind_file_structure_drag_events(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        for idx, info in enumerate(tab_data.get("file_structure_row_widgets") or []):
+            handle = info.get("handle")
+            label = info.get("handle_label")
+            if not handle or not handle.winfo_exists():
+                continue
+            if getattr(handle, "_gb_fs_drag_bound", False):
+                continue
+            handle._gb_fs_drag_bound = True
+            handle.bind("<ButtonPress-1>", lambda e, tid=tab_id, i=idx: self._start_file_structure_drag(tid, i, e), add="+")
+            handle.bind("<ButtonRelease-1>", lambda e, tid=tab_id: self._finish_file_structure_drag(tid, e), add="+")
+            handle.bind("<B1-Motion>", lambda e, tid=tab_id: self._move_file_structure_drag(tid, e), add="+")
+            if label and label.winfo_exists():
+                label.bind("<ButtonPress-1>", lambda e, tid=tab_id, i=idx: self._start_file_structure_drag(tid, i, e), add="+")
+                label.bind("<ButtonRelease-1>", lambda e, tid=tab_id: self._finish_file_structure_drag(tid, e), add="+")
+                label.bind("<B1-Motion>", lambda e, tid=tab_id: self._move_file_structure_drag(tid, e), add="+")
+
+    def _start_file_structure_drag(self, tab_id, index, event):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        tab_data["file_structure_drag"] = {
+            "from_index": int(index),
+            "hover_index": int(index),
+        }
+        self._highlight_file_structure_drag_target(tab_id, index)
+
+    def _highlight_file_structure_drag_target(self, tab_id, hover_index):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        for idx, info in enumerate(tab_data.get("file_structure_row_widgets") or []):
+            card = info.get("card")
+            if not card or not card.winfo_exists():
+                continue
+            try:
+                if idx == hover_index:
+                    card.configure(border_width=2, border_color=ACCENT)
+                else:
+                    card.configure(border_width=1, border_color=PANEL_BORDER)
+            except Exception:
+                continue
+
+    def _find_file_structure_hover_index(self, tab_id, event):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return None
+        y = int(getattr(event, "y_root", 0) or 0)
+        for idx, info in enumerate(tab_data.get("file_structure_row_widgets") or []):
+            card = info.get("card")
+            if not card or not card.winfo_exists():
+                continue
+            top = int(card.winfo_rooty())
+            bottom = top + int(card.winfo_height())
+            if top <= y <= bottom:
+                return idx
+        return None
+
+    def _move_file_structure_drag(self, tab_id, event):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data or not tab_data.get("file_structure_drag"):
+            return
+        hover = self._find_file_structure_hover_index(tab_id, event)
+        if hover is None:
+            return
+        tab_data["file_structure_drag"]["hover_index"] = int(hover)
+        self._highlight_file_structure_drag_target(tab_id, hover)
+
+    def _finish_file_structure_drag(self, tab_id, event):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        drag = tab_data.pop("file_structure_drag", None) or {}
+        from_index = drag.get("from_index")
+        hover_index = drag.get("hover_index")
+        if from_index is None or hover_index is None:
+            self._highlight_file_structure_drag_target(tab_id, -1)
+            return
+        from_index = int(from_index)
+        hover_index = int(hover_index)
+        self._highlight_file_structure_drag_target(tab_id, -1)
+        if from_index == hover_index:
+            return
+        rows = list(tab_data.get("file_structure_rows") or [])
+        if not (0 <= from_index < len(rows) and 0 <= hover_index < len(rows)):
+            return
+        moved = rows.pop(from_index)
+        rows.insert(hover_index, moved)
+        for idx, row_model in enumerate(rows, start=1):
+            row_model.setdefault("values", {})["运行顺序"] = idx
+        tab_data["file_structure_rows"] = rows
+        self._set_file_structure_dirty(tab_id, True)
+        self._render_file_structure_rows(tab_id)
+
+    def load_file_structure_tab(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return False
+        bp_path = tab_data.get("bp_path", "")
+        award_name = _clean_text(get_manifest_award(tab_data.get("award", "")))
+        if not bp_path or not os.path.isfile(bp_path):
+            raise FileNotFoundError(f"未找到文件结构.xlsx：{bp_path}")
+        wb, ws, header, col_map, rows, changed = self._load_file_structure_pipeline_rows(bp_path, award_name)
+        tab_data["file_structure_bp_path"] = bp_path
+        tab_data["file_structure_award_name"] = award_name
+        tab_data["file_structure_header"] = header
+        tab_data["file_structure_col_map"] = col_map
+        tab_data["file_structure_rows"] = rows
+        tab_data["file_structure_header_changed"] = bool(changed)
+        tab_data["file_structure_loaded_at"] = time.time()
+        tab_data["file_structure_workbook"] = wb
+        tab_data["file_structure_sheet"] = ws
+        self._set_file_structure_dirty(tab_id, False, "已从文件读取" + ("（已补齐缺失列，保存后生效）" if changed else ""))
+        return True
+
+    def save_file_structure_tab(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return False
+        bp_path = tab_data.get("file_structure_bp_path") or tab_data.get("bp_path", "")
+        if not bp_path or not os.path.isfile(bp_path):
+            raise FileNotFoundError(f"未找到文件结构.xlsx：{bp_path}")
+
+        wb = tab_data.get("file_structure_workbook")
+        ws = tab_data.get("file_structure_sheet")
+        if not wb or not ws:
+            wb = load_workbook(bp_path)
+            ws = wb["工作区"] if "工作区" in wb.sheetnames else wb.active
+
+        required_columns = self._get_file_structure_column_names()
+        header, col_map, _changed = self._ensure_file_structure_columns(ws, required_columns)
+
+        rows = list(tab_data.get("file_structure_rows") or [])
+        row_widgets = list(tab_data.get("file_structure_row_widgets") or [])
+        for idx, row_model in enumerate(rows, start=1):
+            row_model.setdefault("values", {})["运行顺序"] = idx
+            widget_info = row_widgets[idx - 1] if idx - 1 < len(row_widgets) else {}
+            new_values = self._read_file_structure_row_widgets(widget_info.get("widgets"))
+            for key, value in new_values.items():
+                if key not in row_model["values"]:
+                    row_model["values"][key] = ""
+                row_model["values"][key] = value
+
+        for idx, row_model in enumerate(rows, start=1):
+            sheet_row = int(row_model["sheet_row"])
+            values = row_model.get("values", {})
+            for col_name, raw_value in values.items():
+                if col_name == "工作区名":
+                    continue
+                if col_name not in col_map:
+                    continue
+                col_index = col_map[col_name] + 1
+                value = raw_value
+                if col_name == "运行顺序":
+                    try:
+                        value = int(raw_value)
+                    except Exception:
+                        value = idx
+                ws.cell(row=sheet_row, column=col_index, value=value)
+
+        wb.save(bp_path)
+        tab_data["file_structure_rows"] = rows
+        self._set_file_structure_dirty(tab_id, False, "已保存到文件结构.xlsx")
+        rebuild = getattr(self, "rebuild_workspace_manifest_for_tab", None)
+        if callable(rebuild):
+            rebuild(tab_id)
+        return True
+
+    def render_file_structure_tab(self, tab_id, parent):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        for widget in parent.winfo_children():
+            widget.destroy()
+
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(header, text="文件结构", text_color=TEXT_PRIMARY, font=ui_font(15, "bold")).pack(anchor="w")
+        ctk.CTkLabel(
+            header,
+            text="维护 文件结构.xlsx 中“顺序步骤代码”的关键字段；左侧序号固定，拖动 ≡ 可交换行序（保存时会按当前行序重写运行顺序）。",
+            text_color=TEXT_MUTED,
+            wraplength=WRAP_LEFT_HINT,
+            justify="left",
+            font=ui_font(12),
+        ).pack(anchor="w", pady=(1, 6))
+
+        action_row = ctk.CTkFrame(parent, fg_color="transparent")
+        action_row.pack(fill="x", pady=(0, 6))
+        status_var = tab_data.get("file_structure_status_var")
+        if not status_var:
+            status_var = ctk.StringVar(value="未加载")
+            tab_data["file_structure_status_var"] = status_var
+        ctk.CTkLabel(action_row, textvariable=status_var, text_color=TEXT_MUTED, font=ui_font(11)).pack(side="left", padx=(2, 0))
+
+        ctk.CTkButton(
+            action_row,
+            text="打开 xlsx",
+            width=WIDTH_ACTION_BUTTON,
+            corner_radius=RADIUS_SM,
+            command=lambda tid=tab_id: self.open_file((self.active_tabs_data.get(tid, {}) or {}).get("bp_path", "")),
+            **button_secondary_style(),
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            action_row,
+            text="保存",
+            width=WIDTH_ACTION_BUTTON,
+            corner_radius=RADIUS_SM,
+            command=lambda tid=tab_id: self._on_file_structure_save_clicked(tid),
+            **button_primary_style(),
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            action_row,
+            text="重载",
+            width=WIDTH_ACTION_BUTTON,
+            corner_radius=RADIUS_SM,
+            command=lambda tid=tab_id: self._on_file_structure_reload_clicked(tid),
+            **button_secondary_style(),
+        ).pack(side="right")
+
+        scroll = ctk.CTkScrollableFrame(parent, **scrollable_style())
+        scroll.pack(fill="both", expand=True)
+        tab_data["file_structure_scroll"] = scroll
+
+        try:
+            self.load_file_structure_tab(tab_id)
+        except Exception as exc:
+            ctk.CTkLabel(
+                scroll,
+                text=f"读取失败：{exc}",
+                text_color=TEXT_MUTED,
+                wraplength=WRAP_LEFT_HINT,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=(8, 0))
+            return
+        self._render_file_structure_rows(tab_id)
+
+    def render_file_structure_view(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        parent = tab_data.get("file_structure_view")
+        if not parent or not parent.winfo_exists():
+            return
+        self.render_file_structure_tab(tab_id, parent)
+
+    def _on_file_structure_reload_clicked(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        if tab_data.get("file_structure_dirty"):
+            try:
+                from tkinter import messagebox
+                ok = messagebox.askokcancel("确认重载", "当前有未保存修改，确认丢弃并从磁盘重载吗？")
+            except Exception:
+                ok = True
+            if not ok:
+                return
+        try:
+            self.load_file_structure_tab(tab_id)
+            self._render_file_structure_rows(tab_id)
+        except Exception as exc:
+            try:
+                from tkinter import messagebox
+                messagebox.showerror("重载失败", str(exc))
+            except Exception:
+                pass
+
+    def _on_file_structure_save_clicked(self, tab_id):
+        try:
+            self.save_file_structure_tab(tab_id)
+        except Exception as exc:
+            try:
+                from tkinter import messagebox
+                messagebox.showerror("保存失败", str(exc))
+            except Exception:
+                pass
+
     def render_doc_panel(self, tab_id):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
@@ -1468,7 +2087,43 @@ class WorkspaceUIMixin:
             command=lambda tid=tab_id: self.refresh_docs_from_xlsx(tid),
             **button_secondary_style(),
         ).pack(side="right")
-        ctk.CTkLabel(middle_header, text="按文件结构表匹配说明文件", text_color=TEXT_MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(middle_header, text="优先展示奖项 README.md，其余按文件结构表匹配说明文件", text_color=TEXT_MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 4))
+
+        award_readme = self.get_award_readme_item(manifest.get("workspace_root", ""))
+        readme_card = ctk.CTkFrame(middle_panel, **panel_card_style())
+        readme_card.pack(fill="x", padx=6, pady=6)
+        ctk.CTkLabel(
+            readme_card,
+            text="奖项 README",
+            text_color=TEXT_PRIMARY,
+            font=ui_font(13, "bold"),
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+        readme_row = ctk.CTkFrame(readme_card, **surface_card_style())
+        readme_row.pack(fill="x", padx=10, pady=(4, 8))
+        readme_status_text = "README 已就绪" if award_readme.get("exists") else "README 缺失"
+        readme_status_color = SUCCESS if award_readme.get("exists") else DANGER
+        ctk.CTkLabel(
+            readme_row,
+            text=award_readme["name"],
+            text_color=TEXT_PRIMARY,
+            wraplength=WRAP_DOC_ITEM,
+            justify="left",
+        ).pack(anchor="w", padx=8, pady=(8, 2))
+        ctk.CTkLabel(
+            readme_row,
+            text=readme_status_text,
+            text_color=readme_status_color,
+        ).pack(anchor="w", padx=8)
+        ctk.CTkButton(
+            readme_row,
+            text="打开 README",
+            width=WIDTH_ACTION_BUTTON_XS,
+            height=HEIGHT_BUTTON_XS,
+            corner_radius=RADIUS_SM,
+            state="normal" if award_readme.get("exists") else "disabled",
+            command=lambda p=award_readme.get("abs_path"): self.open_file(p),
+            **button_primary_style(),
+        ).pack(anchor="e", padx=8, pady=(0, 8))
 
         fixed_backup_doc = self.get_fixed_backup_doc_item(manifest.get("workspace_root", ""))
         backup_card = ctk.CTkFrame(middle_panel, **panel_card_style())
@@ -1515,7 +2170,11 @@ class WorkspaceUIMixin:
             card.pack(fill="x", padx=6, pady=6)
             ctk.CTkLabel(
                 card,
-                text=step.get("display_label", step["script_name"]),
+                text=_extract_step_title(
+                    step.get("folder_rel_path", ""),
+                    step.get("rel_path", ""),
+                    step.get("display_label", ""),
+                ),
                 text_color=TEXT_PRIMARY,
                 font=ui_font(13, "bold"),
                 wraplength=WRAP_FOLDER_CARD,
@@ -1551,7 +2210,46 @@ class WorkspaceUIMixin:
                     justify="left",
                 ).pack(anchor="w", padx=10, pady=(0, 10))
 
-        if not manifest.get("steps"):
+        supplemental_doc_sections = list(manifest.get("supplemental_doc_sections", []))
+        for section in supplemental_doc_sections:
+            docs = list(section.get("docs", []))
+            if not docs:
+                continue
+            has_any_doc = True
+            card = ctk.CTkFrame(middle_panel, **panel_card_style())
+            card.pack(fill="x", padx=6, pady=6)
+            ctk.CTkLabel(
+                card,
+                text=_extract_step_title(
+                    section.get("rel_dir", ""),
+                    section.get("display_label", ""),
+                ),
+                text_color=TEXT_PRIMARY,
+                font=ui_font(13, "bold"),
+                wraplength=WRAP_FOLDER_CARD,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=(10, 4))
+            for doc in docs:
+                row = ctk.CTkFrame(card, **surface_card_style())
+                row.pack(fill="x", padx=10, pady=(4, 6))
+                status_text = "说明文件就绪" if doc.get("exists") else "说明文件缺失"
+                status_color = SUCCESS if doc.get("exists") else DANGER
+                ctk.CTkLabel(row, text=doc["name"], text_color=TEXT_PRIMARY, wraplength=WRAP_DOC_ITEM, justify="left").pack(anchor="w", padx=8, pady=(8, 2))
+                ctk.CTkLabel(row, text=status_text, text_color=status_color).pack(anchor="w", padx=8)
+                if doc.get("note"):
+                    ctk.CTkLabel(row, text=doc["note"], text_color=TEXT_MUTED, wraplength=WRAP_DOC_ITEM, justify="left").pack(anchor="w", padx=8, pady=(0, 4))
+                ctk.CTkButton(
+                    row,
+                    text="打开说明",
+                    width=WIDTH_ACTION_BUTTON_XS,
+                    height=HEIGHT_BUTTON_XS,
+                    corner_radius=RADIUS_SM,
+                    state="normal" if doc.get("exists") else "disabled",
+                    command=lambda p=doc.get("abs_path"): self.open_file(p),
+                    **button_primary_style(),
+                ).pack(anchor="e", padx=8, pady=(0, 8))
+
+        if not manifest.get("steps") and not supplemental_doc_sections:
             ctk.CTkLabel(middle_panel, text="当前工作区没有可展示的步骤。", text_color=TEXT_MUTED).pack(anchor="w", padx=10, pady=(10, 0))
         elif not has_any_doc:
             hint = ctk.CTkFrame(middle_panel, **panel_card_style())

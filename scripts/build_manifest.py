@@ -36,7 +36,7 @@ def _is_step_id(v):
     return bool(s) and s.replace("_", "").isdigit()
 
 
-def _step_folder(step, folder):
+def _step_folder(step, folder, workspace_root=""):
     """
     把配置里的“工作区文件夹”还原成磁盘上的真实文件夹名。
     步骤行 -> 'step_{步骤} {文件夹}'（如 step_0 前期准备 / step_1_5 净值对齐可视化）
@@ -46,7 +46,19 @@ def _step_folder(step, folder):
     if not folder:
         return ""
     if _is_step_id(step):
-        return "step_{} {}".format(_clean(step), folder)
+        step_text = _clean(step)
+        preferred = "step_{}_{}".format(step_text, folder)
+        legacy = "step_{} {}".format(step_text, folder)
+        root = _clean(workspace_root)
+        if root:
+            try:
+                if os.path.isdir(os.path.join(root, preferred)):
+                    return preferred
+                if os.path.isdir(os.path.join(root, legacy)):
+                    return legacy
+            except Exception:
+                pass
+        return preferred
     return folder
 
 
@@ -61,7 +73,7 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
     """
     解析配置 -> 蓝图清单（不碰文件系统）。
 
-    workspace_root: 该工作区在磁盘上的根，如 私募金牛奖步骤/2026私募_260616_1
+    workspace_root: 该工作区在磁盘上的根，如 GB_PriFund/2026私募_260616_1
     award:          奖项，对应 xlsx 的“工作区名”列
     """
     wb = load_workbook(blueprint_xlsx, data_only=True)
@@ -94,7 +106,7 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
     for r in data:
         if r[AWARD] != award:
             continue
-        folder = _step_folder(r[STEP], r[FOLDER])
+        folder = _step_folder(r[STEP], r[FOLDER], workspace_root)
         rel_dir = _rel_dir(folder, *[r[i] for i in SUB])
         script = _clean(r[SCRIPT])
         order = r[ORDER]

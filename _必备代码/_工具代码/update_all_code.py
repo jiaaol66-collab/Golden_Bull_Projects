@@ -146,15 +146,19 @@ code = info[info['保存在资料中的名称']!='.'][['步骤', '工作区文�
 code = code.fillna('.')
 
 for idx, row in code.iterrows():
-    step = 'step_' + str(row['步骤']) + ' ' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
     dst_name = row['相应代码和说明文件']
     sav_name = row['保存在资料中的名称']
     sub_dir1 = row['子文件夹1']
     sub_dir2 = row['子文件夹2']
     code_istr = row['代码/说明']
     sub_code = row['代码子文件夹']
-    tof.append(copy_file(f'{step}/{sub_dir1}/{sub_dir2}/{dst_name}',
-                         f'资料/{code_istr}/{sub_code}/{sav_name}',1, 0, 1))
+    step_underscore = 'step_' + str(row['步骤']) + '_' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
+    step_space = 'step_' + str(row['步骤']) + ' ' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
+    src_path_underscore = f'{step_underscore}/{sub_dir1}/{sub_dir2}/{dst_name}'
+    src_path_space = f'{step_space}/{sub_dir1}/{sub_dir2}/{dst_name}'
+    src_path = src_path_underscore if os.path.exists(src_path_underscore) else src_path_space
+
+    tof.append(copy_file(src_path, f'资料/{code_istr}/{sub_code}/{sav_name}', 1, 0, 1))
 
 if os.path.exists('test.py'):
     copy_file('test.py','资料/代码/更新代码/test.py',1)
