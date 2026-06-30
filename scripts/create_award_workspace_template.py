@@ -5,6 +5,13 @@ import json
 import datetime
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+os.chdir(REPO_ROOT)
+# 将项目根目录添加到 sys.path，确保可以找到 award_config 等模块
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from openpyxl import load_workbook
 
 from award_config import register_award_template
@@ -14,11 +21,6 @@ from userlib.tools import (
     custom_input_dialog,
     make_dir,
 )
-
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
-os.chdir(REPO_ROOT)
 BASIC_CODE_DIR = REPO_ROOT / "_必备代码" / "_基础代码"
 TOOL_CODE_DIR = REPO_ROOT / "_必备代码" / "_工具代码"
 DEFAULT_CODE_DIR = REPO_ROOT / "_必备代码" / "_默认代码"

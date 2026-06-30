@@ -1354,6 +1354,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
 
     def on_create_award_template_click(self):
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "create_award_workspace_template.py")
+        project_root = os.path.dirname(os.path.abspath(__file__))
         if not os.path.isfile(script_path):
             messagebox.showwarning("未找到脚本", f"未找到新建奖项模板脚本：\n{script_path}")
             return
@@ -1362,13 +1363,17 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             self.award_template_creation_poll_job = None
             self.award_template_creation_deadline = time.time() + 600
             self.clear_award_template_result_file()
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            # 创建一个临时文件来捕获输出和错误
+            import tempfile
+            stdout_path = os.path.join(project_root, "logs", "create_award_stdout.log")
+            stderr_path = os.path.join(project_root, "logs", "create_award_stderr.log")
+            # 确保日志目录存在
+            os.makedirs(os.path.dirname(stdout_path), exist_ok=True)
+            # 不使用 DETACHED_PROCESS，让窗口可以显示
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             subprocess.Popen(
                 [sys.executable, script_path],
-                cwd=os.path.dirname(script_path),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                cwd=project_root,
                 creationflags=creationflags,
             )
             self.award_template_creation_poll_job = self.safe_after(1200, self.poll_award_template_creation_result)
