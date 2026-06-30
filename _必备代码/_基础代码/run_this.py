@@ -134,7 +134,7 @@ subdir = info.drop_duplicates(subset=['工作区文件夹','子文件夹1','子�
 
 print(f'创建工作区文件夹.. {datetime.now()}'.center(80,'-'))
 for idx, row in subdir.iterrows():
-    base_dir = 'step_' + str(row['步骤']) + ' ' +row['工作区文件夹'] if row['步骤'] != '.' else row['工作区文件夹']
+    base_dir = 'step_' + str(row['步骤']) + '_' +row['工作区文件夹'] if row['步骤'] != '.' else row['工作区文件夹']
     sub_dir1 = row['子文件夹1']
     sub_dir2 = row['子文件夹2']
     sub_dir3 = row['子文件夹3']
@@ -284,7 +284,7 @@ code = info[info['保存在资料中的名称']!='.'][['步骤', '工作区文�
 
 code = code.fillna('.')
 for idx, row in code.iterrows():
-    step = 'step_' + str(row['步骤']) + ' ' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
+    step = 'step_' + str(row['步骤']) + '_' + row['工作区文件夹'] if row['步骤'] != '.' else '.'
     dst_name = row['相应代码和说明文件']
     sav_name = row['保存在资料中的名称']
     sub_dir1 = row['子文件夹1']
@@ -295,7 +295,10 @@ for idx, row in code.iterrows():
     tof = copy_file(f'{mtr}{code_istr}/{sub_code}/{sav_name}', f'../{step}/{sub_dir1}/{sub_dir2}/{dst_name}', 0, 0, 1)
     if not tof:
         if code_istr == '代码':
-            copy_file(f'{mtr}{code_istr}/default_code.py', f'../{step}/{sub_dir1}/{sub_dir2}/{dst_name}')
+            if sub_code == 'notebook':
+                copy_file(f'{mtr}{code_istr}/{sub_code}/default_notebook.ipynb', f'../{step}/{sub_dir1}/{sub_dir2}/{dst_name}')
+            else:
+                copy_file(f'{mtr}{code_istr}/default_code.py', f'../{step}/{sub_dir1}/{sub_dir2}/{dst_name}')
         elif code_istr == '说明':
             copy_file(f'{mtr}{code_istr}/readme.docx', f'../{step}/{sub_dir1}/{sub_dir2}/{dst_name}')
         else:

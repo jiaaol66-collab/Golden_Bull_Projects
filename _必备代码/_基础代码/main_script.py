@@ -139,7 +139,7 @@ else:
 tof = []
 tag_initialize = 0
 if tag == '0':
-    tof.append(run('运行此文件.py', 'step_0 前期准备'))
+    tof.append(run('运行此文件.py', 'step_0_前期准备'))
     tag_initialize = 1
     start_time1 = time.time()
 impt = find_rel(__file__, '重要文件')
@@ -229,18 +229,18 @@ for idx, row in code.iterrows():
 
     num = int(row['步骤']) if isinstance(row['步骤'], int) else row['步骤']
     if row['工作区文件夹'] == '可视化':
-        open_file(f'step_{int(num)+1} 信息汇总/1_信息汇总.py')
-        open_file(f'step_{int(num)+1} 信息汇总/2_净值汇总.py')
+        open_file(f'step_{int(num)+1}_信息汇总/1_信息汇总.py')
+        open_file(f'step_{int(num)+1}_信息汇总/2_净值汇总.py')
     """ 自定义跳过、加入运行代码 """
 
     start = time.time()
     beh = run(row['相应代码和说明文件'],
-              os.path.normpath(f"step_{row['步骤']} {row['工作区文件夹']}/{row['子文件夹1']}/{row['子文件夹2']}"))
+              os.path.normpath(f"step_{row['步骤']}_{row['工作区文件夹']}/{row['子文件夹1']}/{row['子文件夹2']}"))
 
     tof.append(beh)
     end = time.time()
     print()
-    path = f"step_{row['步骤']} {row['工作区文件夹']}/{row['子文件夹1']}/{row['子文件夹2']}/{row['相应代码和说明文件']}"
+    path = f"step_{row['步骤']}_{row['工作区文件夹']}/{row['子文件夹1']}/{row['子文件夹2']}/{row['相应代码和说明文件']}"
     path = os.path.normpath(path)
     print(f"{path}用时{round(end - start, 3)}秒".center(80, '-'))
     if not beh:
