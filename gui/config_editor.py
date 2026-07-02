@@ -274,6 +274,7 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self.profiles_data = {}
         self.year_effective_data = {}
         self.field_widgets = {}
+        self._after_handles = set()
 
         self.status_var = ctk.StringVar(value="读取中...")
         self.json_status_var = ctk.StringVar(value="JSON 仅作为第二个 tab 的高级参考与导入入口。")
@@ -285,8 +286,9 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self.configure(fg_color=APP_BG)
         self.attributes("-topmost", True)
         self.resizable(True, True)
+        self.protocol("WM_DELETE_WINDOW", self.on_window_close)
         try:
-            self.after(0, lambda: self.state("zoomed"))
+            self._track_after(self.after(0, lambda: self.state("zoomed")))
         except Exception:
             pass
 
@@ -297,7 +299,28 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
 
         self.lift()
         self.focus_force()
-        self.after(1200, lambda: self.attributes("-topmost", False))
+        self._track_after(self.after(1200, lambda: self.attributes("-topmost", False)))
+
+    def _track_after(self, handle):
+        if handle:
+            self._after_handles.add(handle)
+        return handle
+
+    def _cancel_tracked_after_jobs(self):
+        for handle in list(self._after_handles):
+            try:
+                self.after_cancel(handle)
+            except Exception:
+                pass
+        self._after_handles.clear()
+
+    def on_window_close(self):
+        self._cancel_tracked_after_jobs()
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        self.destroy()
 
     def build_layout(self):
         header = ctk.CTkFrame(self, **outer_panel_style())

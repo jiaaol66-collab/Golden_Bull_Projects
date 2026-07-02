@@ -14,7 +14,7 @@ FileTreeModel 为纯 Python（不依赖 tkinter），可独立做往返/编辑�
 import os
 import copy
 import re
-
+import datetime
 try:
     import tkinter as tk
     from tkinter import ttk, messagebox, simpledialog
@@ -32,18 +32,24 @@ except Exception:
 
 # 标准列顺序（缺列时按此补齐尾部三列）
 CANON_COLUMNS = [
-    "工作区名", "步骤", "工作区文件夹", "子文件夹1", "子文件夹2", "子文件夹3", "子文件夹4",
+    "index", "工作区名", "步骤", "工作区文件夹", "子文件夹1", "子文件夹2", "子文件夹3", "子文件夹4",
     "运行顺序", "代码/说明", "代码子文件夹", "相应代码和说明文件", "保存在资料中的名称",
     "备注", "其他", "输出文件", "对应代码",
 ]
-ENSURE_TAIL_COLUMNS = ["其他", "输出文件", "对应代码"]
+ENSURE_TAIL_COLUMNS = ["index", "其他", "输出文件", "对应代码"]
 WORKSPACE_COLUMN_NAME = "工作区名"
+INDEX_COLUMN_NAME = "index"
 UNNAMED_PLACEHOLDER = "(未命名)"
+DEFAULT_NEW_FILE_BASENAME = "未命名"
 BLANK_OPTION_LABEL = "(空白)"
 CODE_SUBDIR_OPTIONS = [BLANK_OPTION_LABEL, "工作区设置", "更新代码", "notebook"]
 OUTPUT_MARKER_OPTIONS = ["全量", "ins"]
 RUN_ORDER_LIMIT = 100
 STEP_LIMIT = 20
+NAME_NUMBER_LIMIT = 9
+README_NUMBER_LIMIT = 100
+CODE_EXTENSION_OPTIONS = [".py", ".ipynb"]
+DOC_EXTENSION_OPTIONS = [".docx", ".md"]
 
 
 def _clean(value):
@@ -108,6 +114,13 @@ class FileTreeModel:
         self.col = {name: i for i, name in enumerate(self.header)}
         self.tree = None
         self.index = {}
+        
+        self._max_idx = 0
+        for row in self.rows:
+            rid = self.row_id(row)
+            if rid and str(rid).isdigit():
+                self._max_idx = max(self._max_idx, int(rid))
+                
         self.rebuild()
 
     # ---- 单元格读写 ----
@@ -118,6 +131,9 @@ class FileTreeModel:
         i = self._ci(name)
         return _clean(row[i]) if 0 <= i < len(row) else ""
 
+    def row_id(self, row):
+        return self.cell(row, INDEX_COLUMN_NAME)
+
     def _set_on(self, row, name, value):
         i = self._ci(name)
         if i < 0:
@@ -125,6 +141,30 @@ class FileTreeModel:
         while len(row) <= i:
             row.append(None)
         row[i] = value if (value is not None and str(value) != "") else None
+
+    def _next_row_index(self):
+        self._max_idx += 1
+        return str(self._max_idx)
+
+    def reserve_new_row(self):
+        row = [None] * len(self.header)
+        self._set_on(row, INDEX_COLUMN_NAME, self._next_row_index())
+        self.rows.append(row)
+        return len(self.rows) - 1
+
+    def ensure_row_ids(self):
+        seen = set()
+        changed = False
+        for row in self.rows:
+            rid = self.row_id(row)
+            if not rid or rid in seen:
+                self._set_on(row, INDEX_COLUMN_NAME, self._next_row_index())
+                rid = self.row_id(row)
+                changed = True
+            seen.add(rid)
+        if changed:
+            self.rebuild()
+        return changed
 
     def set_cell(self, ri, name, value):
         if 0 <= ri < len(self.rows):
@@ -141,9 +181,35 @@ class FileTreeModel:
             s = self.cell(row, f"子文件夹{k}")
             if s:
                 segs.append(s)
-            else:
-                break
+            # 注意：不要遇到空就break！而是继续检查下一个子文件夹！
         return segs
+
+    def _make_top_key(self, step, top_name):
+        return ("__top__", _clean(step), _clean(top_name))
+
+    def _is_top_key(self, item):
+        return isinstance(item, tuple) and len(item) == 3 and item[0] == "__top__"
+
+    def _display_seg(self, item):
+        return item[2] if self._is_top_key(item) else item
+
+    def _display_path(self, path):
+        return tuple(self._display_seg(item) for item in tuple(path))
+
+    def _path_step(self, path):
+        path = tuple(path)
+        if path and self._is_top_key(path[0]):
+            return _clean(path[0][1])
+        if path:
+            return self._top_step(self._display_seg(path[0]))
+        return ""
+
+    def _path_keys(self, row):
+        segs = self._segments(row)
+        if not segs:
+            return ()
+        step_value = self.cell(row, "步骤")
+        return (self._make_top_key(step_value, segs[0]),) + tuple(segs[1:])
 
     def _classify(self, row):
         if self.cell(row, "相应代码和说明文件"):
@@ -157,14 +223,19 @@ class FileTreeModel:
 
     def _row_matches_path(self, row, path):
         """row 的 0..len(path)-1 层是否逐段等于 path（即 path 是该行路径的前缀）。"""
-        for i, seg in enumerate(path):
-            if self.cell(row, self._col_for_level(i)) != seg:
+        row_segs = self._path_keys(row)
+        if len(path) > len(row_segs):
+            return False
+        for i in range(len(path)):
+            if row_segs[i] != path[i]:
                 return False
         return True
 
     def _top_step(self, top_name):
+        if self._is_top_key(top_name):
+            return _clean(top_name[1])
         for row in self.rows:
-            if self.cell(row, "工作区文件夹") == top_name:
+            if self.cell(row, "工作区文件夹") == self._display_seg(top_name):
                 s = self.cell(row, "步骤")
                 if s:
                     return s
@@ -176,14 +247,16 @@ class FileTreeModel:
                 "children": [], "files": [], "outputs": [], "folder_rows": []}
         index = {(): root}
 
-        def get_folder(segs):
+        def get_folder(path_keys, display_segs):
             node = root
-            for d in range(len(segs)):
-                key = tuple(segs[: d + 1])
+            for d in range(len(path_keys)):
+                key = tuple(path_keys[: d + 1])
                 if key not in index:
-                    parent = index[tuple(segs[:d])]
-                    fn = {"kind": "folder", "name": segs[d], "path": key, "step": "",
+                    parent = index[tuple(path_keys[:d])]
+                    fn = {"kind": "folder", "name": display_segs[d], "path": key, "step": "",
                           "children": [], "files": [], "outputs": [], "folder_rows": []}
+                    if d == 0 and self._is_top_key(path_keys[d]):
+                        fn["step"] = _clean(path_keys[d][1])
                     index[key] = fn
                     parent["children"].append(fn)
                 node = index[key]
@@ -191,18 +264,15 @@ class FileTreeModel:
 
         for ri, row in enumerate(self.rows):
             segs = self._segments(row)
+            path_keys = self._path_keys(row)
             kind = self._classify(row)
-            node = get_folder(segs) if segs else root
+            node = get_folder(path_keys, segs) if path_keys else root
             if kind == "file":
                 node["files"].append(ri)
             elif kind == "output":
                 node["outputs"].append(ri)
             else:
                 node["folder_rows"].append(ri)
-
-        for key, node in index.items():
-            if len(key) == 1:
-                node["step"] = self._top_step(key[0])
 
         self.tree = root
         self.index = index
@@ -213,7 +283,7 @@ class FileTreeModel:
         if not new_name or not path or tuple(path) == ():
             return False
         path = tuple(path)
-        if path[-1] == new_name:
+        if self._display_seg(path[-1]) == new_name:
             return False
         level = len(path) - 1
         colname = self._col_for_level(level)
@@ -229,7 +299,7 @@ class FileTreeModel:
             return False
         step = (step or "").strip()
         for row in self.rows:
-            if self.cell(row, "工作区文件夹") == path[0]:
+            if self._row_matches_path(row, path):
                 self._set_on(row, "步骤", step)
         self.rebuild()
         return True
@@ -243,41 +313,42 @@ class FileTreeModel:
 
     def add_file(self, folder_path, name="新文件.py", file_type="代码"):
         folder_path = tuple(folder_path)
-        row = [None] * len(self.header)
-        for i, seg in enumerate(folder_path):
+        ri = self.reserve_new_row()
+        row = self.rows[ri]
+        for i, seg in enumerate(self._display_path(folder_path)):
             self._set_on(row, self._col_for_level(i), seg)
         if folder_path:
-            self._set_on(row, "步骤", self._top_step(folder_path[0]))
+            self._set_on(row, "步骤", self._path_step(folder_path))
         self._set_on(row, "相应代码和说明文件", name)
         self._set_on(row, "代码/说明", file_type)
-        self.rows.append(row)
         self.rebuild()
-        return len(self.rows) - 1
+        return ri
 
     def add_folder(self, parent_path, name="新文件夹"):
         parent_path = tuple(parent_path)
         full = parent_path + (name,)
-        row = [None] * len(self.header)
-        for i, seg in enumerate(full):
+        ri = self.reserve_new_row()
+        row = self.rows[ri]
+        for i, seg in enumerate(self._display_path(full)):
             self._set_on(row, self._col_for_level(i), seg)
-        if len(full) > 1:
-            self._set_on(row, "步骤", self._top_step(full[0]))
-        self.rows.append(row)
+        if full:
+            step_value = self._path_step(parent_path) if parent_path else ""
+            self._set_on(row, "步骤", step_value or None)
         self.rebuild()
-        return full
+        return tuple(self._path_keys(row)), ri
 
     def add_output(self, folder_path, marker="ins", code=""):
         folder_path = tuple(folder_path)
-        row = [None] * len(self.header)
-        for i, seg in enumerate(folder_path):
+        ri = self.reserve_new_row()
+        row = self.rows[ri]
+        for i, seg in enumerate(self._display_path(folder_path)):
             self._set_on(row, self._col_for_level(i), seg)
         if folder_path:
-            self._set_on(row, "步骤", self._top_step(folder_path[0]))
+            self._set_on(row, "步骤", self._path_step(folder_path))
         self._set_on(row, "输出文件", marker)
         self._set_on(row, "对应代码", code)
-        self.rows.append(row)
         self.rebuild()
-        return len(self.rows) - 1
+        return ri
 
     def delete_file(self, ri):
         if 0 <= ri < len(self.rows):
@@ -290,6 +361,55 @@ class FileTreeModel:
             return
         self.rows[:] = [row for row in self.rows if not self._row_matches_path(row, path)]
         self.rebuild()
+
+    def _apply_path_to_row(self, row, segs):
+        segs = list(segs)
+        display_segs = list(self._display_path(segs))
+        for level in range(5):
+            colname = self._col_for_level(level)
+            value = display_segs[level] if level < len(display_segs) else None
+            self._set_on(row, colname, value)
+        self._set_on(row, "步骤", self._path_step(segs) or None)
+
+    def move_file(self, ri, target_folder_path):
+        if not (0 <= ri < len(self.rows)):
+            return False
+        target_folder_path = tuple(target_folder_path)
+        row = self.rows.pop(ri)
+        self._apply_path_to_row(row, target_folder_path)
+        self._set_on(row, INDEX_COLUMN_NAME, self._next_row_index())
+        self.rows.append(row)
+        self.rebuild()
+        return True
+
+    def move_folder(self, source_path, target_parent_path):
+        source_path = tuple(source_path)
+        target_parent_path = tuple(target_parent_path)
+        if not source_path:
+            return None
+        new_path = target_parent_path + (source_path[-1],)
+        if source_path == new_path:
+            return new_path
+        
+        moving_rows = []
+        keep_rows = []
+        for row in self.rows:
+            if self._row_matches_path(row, source_path):
+                moving_rows.append(row)
+            else:
+                keep_rows.append(row)
+                
+        self.rows[:] = keep_rows
+        
+        for row in moving_rows:
+            current = tuple(self._path_keys(row))
+            suffix = current[len(source_path):]
+            self._apply_path_to_row(row, new_path + suffix)
+            self._set_on(row, INDEX_COLUMN_NAME, self._next_row_index())
+            self.rows.append(row)
+            
+        self.rebuild()
+        return new_path
 
     # ---- 便捷读取（供 UI 表单用）----
     def file_fields(self, ri):
@@ -308,7 +428,13 @@ class FileTreeModel:
 #  读 / 写 工作簿（与原编辑器同约定）
 # ======================================================================
 def load_blueprint(path):
-    """读取 文件结构.xlsx -> (workbook, sheet, header, rows)。缺尾部三列则补齐。"""
+    """读取 文件结构.xlsx -> (workbook, sheet, header, rows)。
+
+    兼容旧表：
+    1. 若缺少 index 列，则只补表头中的 index；
+    2. 若 index 存在空白或重复，则只补/修正 index 单元格；
+    3. 上述修复会立即原子写回原文件，避免后续基于脏 index 再做 concat/重排。
+    """
     wb = load_workbook(path)
     if "工作区" not in wb.sheetnames:
         raise ValueError("缺少『工作区』sheet。")
@@ -328,24 +454,113 @@ def load_blueprint(path):
     if appended:
         for ci, name in enumerate(header, start=1):
             ws.cell(row=1, column=ci, value=name)
+    index_ci = header.index(INDEX_COLUMN_NAME)
+    next_idx = 0
+    seen = set()
+    index_fixed = appended
+    for row_idx in range(2, ws.max_row + 1):
+        raw = _clean(ws.cell(row=row_idx, column=index_ci + 1).value)
+        if raw.isdigit():
+            next_idx = max(next_idx, int(raw))
+        if raw and raw not in seen:
+            seen.add(raw)
+            continue
+        next_idx += 1
+        new_idx = str(next_idx)
+        while new_idx in seen:
+            next_idx += 1
+            new_idx = str(next_idx)
+        ws.cell(row=row_idx, column=index_ci + 1, value=new_idx)
+        seen.add(new_idx)
+        index_fixed = True
+    if index_fixed:
+        tmp_path = path + ".tmp"
+        try:
+            wb.save(tmp_path)
+            os.replace(tmp_path, path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            raise
+        # 重新打开，确保后续读取的是已经补好 index 的磁盘版本
+        wb = load_workbook(path)
+        ws = wb["工作区"]
     max_col = len(header)
     rows = [list(r) for r in ws.iter_rows(min_row=2, max_col=max_col, values_only=True)]
     return wb, ws, header, rows
 
 
 def save_blueprint(wb, ws, header, rows, path):
-    """把 header + rows 写回（空值写 None），奖项名稀疏填充天然保留。"""
+    """根据 index 原地更新 Excel 行，保持原先行位置和格式不变；新增的行追加到末尾；删除的行被移除。"""
     max_col = len(header)
     for ci, name in enumerate(header, start=1):
         ws.cell(row=1, column=ci, value=name)
-    required_total = len(rows) + 1
-    if ws.max_row > required_total:
-        ws.delete_rows(required_total + 1, ws.max_row - required_total)
-    for off, row in enumerate(rows, start=2):
+
+    index_ci = header.index(INDEX_COLUMN_NAME) if INDEX_COLUMN_NAME in header else -1
+    if index_ci < 0:
+        raise ValueError(f"保存失败：表头中未找到 {INDEX_COLUMN_NAME} 列")
+
+    # 1. 收集 Excel 中现有的 index 及其行号
+    existing_indexes = {}
+    for row_idx in range(2, ws.max_row + 1):
+        idx_val = _clean(ws.cell(row=row_idx, column=index_ci + 1).value)
+        if idx_val:
+            existing_indexes[idx_val] = row_idx
+
+    # 2. 找出需要删除的行（在 Excel 中但不在当前 rows 中）
+    current_indexes = set()
+    for row in rows:
+        idx_val = _clean(row[index_ci]) if index_ci < len(row) else ""
+        if idx_val:
+            current_indexes.add(idx_val)
+
+    rows_to_delete = []
+    for idx_val, row_idx in existing_indexes.items():
+        if idx_val not in current_indexes:
+            rows_to_delete.append(row_idx)
+
+    # 从下往上删，避免行号偏移
+    for row_idx in sorted(rows_to_delete, reverse=True):
+        ws.delete_rows(row_idx)
+
+    # 重新收集删除后的 index 映射，确保我们找准现在的真实行号
+    existing_indexes = {}
+    for row_idx in range(2, ws.max_row + 1):
+        idx_val = _clean(ws.cell(row=row_idx, column=index_ci + 1).value)
+        if idx_val:
+            existing_indexes[idx_val] = row_idx
+
+    # 3. 原地更新已有行，或在末尾追加新行
+    # 这里非常重要：对于新增行，必须严格追加到目前 Excel 真实的末尾之后
+    current_max_row = ws.max_row
+    for row in rows:
+        idx_val = _clean(row[index_ci]) if index_ci < len(row) else ""
+        if idx_val in existing_indexes:
+            target_row_idx = existing_indexes[idx_val]
+        else:
+            current_max_row += 1
+            target_row_idx = current_max_row
+
         for ci in range(1, max_col + 1):
             v = row[ci - 1] if ci - 1 < len(row) else ""
-            ws.cell(row=off, column=ci, value=v if (v is not None and str(v) != "") else None)
-    wb.save(path)
+            ws.cell(row=target_row_idx, column=ci, value=v if (v is not None and str(v) != "") else None)
+
+    try:
+        import os
+        tmp_path = path + ".tmp"
+        wb.save(tmp_path)
+        # 使用 os.replace 进行原子替换，避免先删除导致的数据丢失风险
+        os.replace(tmp_path, path)
+    except Exception as exc:
+        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise exc
 
 
 # ======================================================================
@@ -380,6 +595,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.model = None
         self._item_meta = {}       # treeview item id -> ("folder"/file/output/root, key)
         self._selected = None
+        self._selected_batch = []
         # 撤销 / 重做 / 回到初始
         self._undo_stack = []
         self._redo_stack = []
@@ -392,6 +608,12 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._redo_btn = None
         self._doc_to_codes = {}
         self._detail_state = {}
+        self._clipboard = None
+        self._detail_canvas = None
+        self._detail_window_id = None
+        self._detail_action_btn = None
+        self._active_detail_apply = None
+        self._confirm_popup = None
 
         self.title(f"文件结构（树状视图） · {workspace_name or award_name}")
         self.geometry("1080x680")
@@ -420,6 +642,152 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                   background=[("selected", PALETTE["accent_tint"])],
                   foreground=[("selected", PALETTE["text"])])
         style.layout("FS.Treeview", [("FS.Treeview.treearea", {"sticky": "nswe"})])
+
+    def _log(self, msg):
+        if not hasattr(self, "log_text"):
+            return
+        self.log_text.config(state="normal")
+        self.log_text.insert("end", f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+        self.log_text.see("end")
+        self.log_text.config(state="disabled")
+
+    def _on_tab_changed(self, event):
+        selected_tab = event.widget.select()
+        tab_text = event.widget.tab(selected_tab, "text")
+        if tab_text == "全局映射视图":
+            self._refresh_global_mapping_tab()
+
+    def _refresh_global_mapping_tab(self):
+        if not hasattr(self, "mapping_text"):
+            return
+        self.mapping_text.config(state="normal")
+        self.mapping_text.delete("1.0", "end")
+        
+        self.mapping_text.tag_configure("warn", foreground="#ffb86c") # 黄色警告
+        self.mapping_text.tag_configure("error", foreground="#ff5555") # 红色错误
+        
+        # 1. 收集命名冲突
+        conflict_row_ids = set()
+        for conflict in self._collect_saved_name_conflicts():
+            conflict_row_ids.update(conflict["row_ids"])
+            
+        # 2. 解析所有文件并分组
+        codes = []
+        docs = []
+        for ri, row in enumerate(self.rows):
+            file_type = _clean(self.model.cell(row, "代码/说明"))
+            if file_type not in ("代码", "说明"):
+                continue
+            
+            step_val = _clean(self._effective_step_for_row(ri))
+            step_num = float('inf')
+            if step_val and step_val.isdigit():
+                step_num = int(step_val)
+            
+            order_val = _clean(self.model.cell(row, "运行顺序"))
+            order_num = float('inf')
+            if order_val and order_val.isdigit():
+                order_num = int(order_val)
+            
+            name = _clean(self.model.cell(row, "相应代码和说明文件"))
+            subfolder = _clean(self.model.cell(row, "代码子文件夹"))
+            row_id = self._row_id(row)
+            
+            # 校验异常
+            status = "normal"
+            if file_type == "说明" and name.endswith(".docx"):
+                if subfolder: status = "warn"
+            elif file_type == "代码" and name.endswith(".py"):
+                if subfolder in ("更新代码", "notebook"): status = "warn"
+            elif file_type == "代码" and name.endswith(".ipynb"):
+                if subfolder != "notebook": status = "warn"
+                
+            if row_id in conflict_row_ids:
+                status = "error"
+                
+            item = {
+                "row": row,
+                "row_id": row_id,
+                "step_val": step_val,
+                "step_num": step_num,
+                "order_val": order_val,
+                "order_num": order_num,
+                "ri": ri,
+                "status": status,
+                "name": name,
+                "subfolder": subfolder,
+                "file_type": file_type
+            }
+            if file_type == "代码":
+                codes.append(item)
+            else:
+                docs.append(item)
+                
+        # 2. 建立说明到代码的映射，找出孤立说明
+        doc_to_codes = self._build_doc_to_codes_from_rows()
+        code_id_to_docs = {}
+        for doc_id, c_ids in doc_to_codes.items():
+            for c_id in c_ids:
+                code_id_to_docs.setdefault(c_id, []).append(doc_id)
+                
+        # 3. 按规则生成显示列表
+        # 规则：按代码的运行顺序排，说明紧跟在绑定的代码下方；无顺序代码或孤立说明放最后
+        codes.sort(key=lambda x: (x["step_num"], x["order_num"], x["ri"]))
+        
+        display_blocks = []
+        
+        # 处理有顺序/步骤的代码，以及它们绑定的说明
+        processed_doc_ids = set()
+        for code in codes:
+            block = [code]
+            c_id = code["row_id"]
+            # 找出绑定到这个代码的说明
+            if c_id in code_id_to_docs:
+                bound_doc_ids = code_id_to_docs[c_id]
+                for doc in docs:
+                    if doc["row_id"] in bound_doc_ids:
+                        block.append(doc)
+                        processed_doc_ids.add(doc["row_id"])
+            display_blocks.append(block)
+            
+        # 处理孤立的说明（没有绑定到任何代码）
+        isolated_docs = [doc for doc in docs if doc["row_id"] not in processed_doc_ids]
+        isolated_docs.sort(key=lambda x: (x["step_num"], x["order_num"], x["ri"]))
+        for doc in isolated_docs:
+            display_blocks.append([doc])
+            
+        # 4. 渲染到界面，块之间空一行
+        for i, block in enumerate(display_blocks):
+            for item in block:
+                row = item["row"]
+                step_val = item["step_val"] or "无"
+                
+                segs = self.model._segments(row)
+                subfolders = "/".join(segs[1:-1]) if len(segs) > 2 else ""
+                if subfolders:
+                    subfolders += "/"
+                    
+                name = item["name"]
+                file_type = item["file_type"]
+                # 只有代码类型且代码子文件夹真的不为空时，才加子文件夹路径
+                code_subfolder = item["subfolder"]
+                saved_name = _clean(self.model.cell(row, "保存在资料中的名称"))
+                
+                target_folder = f"资料/{file_type}"
+                if file_type == "代码" and code_subfolder:
+                    target_folder += f"/{code_subfolder}"
+                    
+                order_str = f"[{item['order_val']}] " if item['order_val'] else "[ ] "
+                line = f"{order_str}step_{step_val} {subfolders}{name} → {target_folder} {saved_name}\n"
+                
+                tag = item["status"]
+                self.mapping_text.insert("end", line, tag if tag != "normal" else ())
+            
+            # 块之间加空行
+            if i < len(display_blocks) - 1:
+                self.mapping_text.insert("end", "\n")
+                
+        self.mapping_text.config(state="disabled")
 
     # ---------- 布局 ----------
     def _build_layout(self):
@@ -465,17 +833,29 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         ltool.pack(side="top", fill="x", padx=8, pady=8)
         tk.Label(ltool, text="文件夹树", bg=PALETTE["panel"], fg=PALETTE["secondary"],
                  font=(FONT, 10, "bold")).pack(side="left")
-        self._tk_button(ltool, "删除", self.on_delete, small=True, danger=True).pack(side="right")
-        self._tk_button(ltool, "＋ 文件", self.on_add_file, small=True).pack(side="right", padx=6)
-        self._tk_button(ltool, "＋ 文件夹", self.on_add_folder, small=True).pack(side="right")
-        self._tk_button(ltool, "＋ 输出文件夹", self.on_add_output_folder, small=True).pack(side="right", padx=6)
-        self._tk_button(ltool, "＋ 步骤文件夹", self.on_add_step_folder, small=True).pack(side="right", padx=6)
+        ltool_actions = self._responsive_button_bar(
+            ltool,
+            [
+                {"text": "＋ 步骤文件夹", "cmd": self.on_add_step_folder, "small": True},
+                {"text": "＋ 输出文件夹", "cmd": self.on_add_output_folder, "small": True},
+                {"text": "＋ 文件夹", "cmd": self.on_add_folder, "small": True},
+                {"text": "＋ 文件", "cmd": self.on_add_file, "small": True},
+                {"text": "展开全部", "cmd": self.on_expand_all, "small": True},
+                {"text": "收起全部", "cmd": self.on_collapse_all, "small": True},
+                {"text": "剪切", "cmd": self.on_cut, "small": True},
+                {"text": "粘贴", "cmd": self.on_paste, "small": True},
+                {"text": "删除", "cmd": self.on_delete, "small": True, "danger": True},
+            ],
+            small=True,
+            min_button_width=92,
+        )
+        ltool_actions.pack(side="right", fill="x", expand=True, padx=(12, 0))
 
         treewrap = tk.Frame(left, bg=PALETTE["surface"], highlightthickness=1,
                             highlightbackground=PALETTE["border"])
         treewrap.pack(side="top", fill="both", expand=True, padx=8, pady=(0, 8))
         self.tree = ttk.Treeview(treewrap, style="FS.Treeview", show="tree headings",
-                                 columns=("type", "order", "group"), selectmode="browse")
+                                 columns=("type", "order", "group"), selectmode="extended")
         self.tree.heading("#0", text="名称")
         self.tree.heading("type", text="类型")
         self.tree.heading("order", text="序")
@@ -495,17 +875,85 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<BackSpace>", lambda e: self.on_delete())
 
-        # 右
-        right = tk.Frame(body, bg=PALETTE["surface"])
-        right.pack(side="left", fill="both", expand=True)
+        # 右侧（用 Notebook 包装）
+        self.notebook = ttk.Notebook(body)
+        self.notebook.pack(side="left", fill="both", expand=True)
+
+        right = tk.Frame(self.notebook, bg=PALETTE["surface"])
+        self.notebook.add(right, text="详情与编辑")
+
+        log_frame = tk.Frame(self.notebook, bg=PALETTE["surface"])
+        self.notebook.add(log_frame, text="操作日志")
+        
+        self.log_text = tk.Text(log_frame, bg="#1e1e1e", fg="#d4d4d4", font=("Consolas", 10), state="disabled", wrap="word")
+        log_vsb = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_vsb.set)
+        log_vsb.pack(side="right", fill="y")
+        self.log_text.pack(side="left", fill="both", expand=True)
+
+        mapping_frame = tk.Frame(self.notebook, bg=PALETTE["surface"])
+        self.notebook.add(mapping_frame, text="全局映射视图")
+        
+        self.mapping_text = tk.Text(mapping_frame, bg="#1e1e1e", fg="#d4d4d4", font=("Consolas", 10), state="disabled", wrap="none")
+        mapping_vsb = ttk.Scrollbar(mapping_frame, orient="vertical", command=self.mapping_text.yview)
+        mapping_hsb = ttk.Scrollbar(mapping_frame, orient="horizontal", command=self.mapping_text.xview)
+        self.mapping_text.configure(yscrollcommand=mapping_vsb.set, xscrollcommand=mapping_hsb.set)
+        mapping_vsb.pack(side="right", fill="y")
+        mapping_hsb.pack(side="bottom", fill="x")
+        self.mapping_text.pack(side="left", fill="both", expand=True)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
         rhead = tk.Frame(right, bg=PALETTE["surface"])
         rhead.pack(side="top", fill="x")
         self.right_title = tk.Label(rhead, text="文件详情", bg=PALETTE["surface"],
                                     fg=PALETTE["secondary"], font=(FONT, 10, "bold"), anchor="w",
                                     padx=18, pady=10)
         self.right_title.pack(fill="x")
-        self.detail = tk.Frame(right, bg=PALETTE["surface"])
-        self.detail.pack(side="top", fill="both", expand=True)
+        detail_wrap = tk.Frame(right, bg=PALETTE["surface"])
+        detail_wrap.pack(side="top", fill="both", expand=True)
+        self._detail_canvas = tk.Canvas(
+            detail_wrap,
+            bg=PALETTE["surface"],
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+        )
+        detail_vsb = ttk.Scrollbar(detail_wrap, orient="vertical", command=self._detail_canvas.yview)
+        self._detail_canvas.configure(yscrollcommand=detail_vsb.set)
+        detail_vsb.pack(side="right", fill="y")
+        self._detail_canvas.pack(side="left", fill="both", expand=True)
+        self.detail = tk.Frame(self._detail_canvas, bg=PALETTE["surface"])
+        self._detail_window_id = self._detail_canvas.create_window((0, 0), window=self.detail, anchor="nw")
+        self.detail.bind("<Configure>", self._sync_detail_canvas, add="+")
+        self._detail_canvas.bind("<Configure>", self._sync_detail_canvas, add="+")
+        self.detail.bind("<MouseWheel>", self._on_detail_mousewheel, add="+")
+        self._detail_canvas.bind("<MouseWheel>", self._on_detail_mousewheel, add="+")
+
+        detail_actions = tk.Frame(
+            right,
+            bg=PALETTE["surface"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        detail_actions.pack(side="bottom", fill="x")
+        tk.Label(
+            detail_actions,
+            text="Shift+Enter：弹出确认，Enter 执行应用，点击别处取消。",
+            bg=PALETTE["surface"],
+            fg=PALETTE["muted"],
+            font=(FONT, 8),
+            anchor="w",
+            padx=18,
+            pady=8,
+        ).pack(side="left", fill="x", expand=True)
+        self._detail_action_btn = self._tk_button(
+            detail_actions,
+            "应用修改",
+            self._run_detail_apply,
+            primary=True,
+        )
+        self._detail_action_btn.pack(side="right", padx=16, pady=10)
+        self._detail_action_btn.config(state="disabled")
 
         # 底部状态
         self.status_var = tk.StringVar(value="")
@@ -518,6 +966,12 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.bind("<Control-Z>", lambda e: self.undo())
         self.bind("<Control-y>", lambda e: self.redo())
         self.bind("<Control-Shift-Z>", lambda e: self.redo())
+        self.bind("<Control-x>", lambda e: self.on_cut())
+        self.bind("<Control-X>", lambda e: self.on_cut())
+        self.bind("<Control-v>", lambda e: self.on_paste())
+        self.bind("<Control-V>", lambda e: self.on_paste())
+        self.bind_all("<Shift-Return>", self._request_detail_apply, add="+")
+        self.bind_all("<Shift-KP_Enter>", self._request_detail_apply, add="+")
 
     def _tk_button(self, parent, text, cmd, primary=False, small=False, danger=False):
         bg = PALETTE["accent"] if primary else PALETTE["surface"]
@@ -528,6 +982,202 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                       activeforeground=fg, padx=10 if small else 14, pady=4 if small else 7,
                       highlightthickness=1, highlightbackground=PALETTE["border"])
         return b
+
+    def _responsive_button_bar(self, parent, specs, small=False, min_button_width=96):
+        wrap = tk.Frame(parent, bg=parent.cget("bg"))
+        buttons = []
+        for spec in specs:
+            btn = self._tk_button(
+                wrap,
+                spec["text"],
+                spec["cmd"],
+                primary=spec.get("primary", False),
+                small=small or spec.get("small", False),
+                danger=spec.get("danger", False),
+            )
+            buttons.append(btn)
+
+        def _relayout(_event=None):
+            count = len(buttons)
+            if count == 0:
+                return
+            width = max(wrap.winfo_width(), 1)
+            columns = max(1, min(count, width // min_button_width))
+            for child in buttons:
+                child.grid_forget()
+            for ci in range(count):
+                wrap.grid_columnconfigure(ci, weight=0, uniform="")
+            for ci in range(columns):
+                wrap.grid_columnconfigure(ci, weight=1, uniform=f"btnbar_{id(wrap)}")
+            for idx, btn in enumerate(buttons):
+                row = idx // columns
+                col = idx % columns
+                btn.grid(row=row, column=col, sticky="ew", padx=3, pady=3)
+
+        wrap.bind("<Configure>", _relayout, add="+")
+        wrap.after(0, _relayout)
+        return wrap
+
+    def _sync_detail_canvas(self, _event=None):
+        if not self._detail_canvas or not self._detail_window_id:
+            return
+        try:
+            self._detail_canvas.itemconfigure(self._detail_window_id, width=self._detail_canvas.winfo_width())
+            self._detail_canvas.configure(scrollregion=self._detail_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_detail_mousewheel(self, event):
+        if not self._detail_canvas:
+            return "break"
+        try:
+            delta = event.delta
+            if delta:
+                self._detail_canvas.yview_scroll(int(-delta / 120), "units")
+        except Exception:
+            pass
+        return "break"
+
+    def _bind_mousewheel_recursive(self, widget):
+        widget.bind("<MouseWheel>", self._on_detail_mousewheel, add="+")
+        for child in widget.winfo_children():
+            # Don't bind to listbox/text if they need their own scroll, but here it's fine for simple listbox if it's small, 
+            # or we just skip if it's a Listbox that has its own scrollbar.
+            if not isinstance(child, (tk.Listbox, tk.Text)):
+                self._bind_mousewheel_recursive(child)
+
+    def _clear_detail_panel(self):
+        self._detail_state = {}
+        self._close_confirm_popup()
+        self._set_detail_apply_action(None)
+        for w in self.detail.winfo_children():
+            w.destroy()
+        if self._detail_canvas:
+            try:
+                self._detail_canvas.yview_moveto(0)
+            except Exception:
+                pass
+
+    def _set_detail_apply_action(self, command):
+        self._active_detail_apply = command if callable(command) else None
+        if not self._detail_action_btn:
+            return
+        state = "normal" if self._active_detail_apply else "disabled"
+        try:
+            self._detail_action_btn.config(state=state)
+        except Exception:
+            pass
+
+    def _close_confirm_popup(self):
+        popup = self._confirm_popup
+        self._confirm_popup = None
+        if popup is None:
+            return
+        try:
+            popup.destroy()
+        except Exception:
+            pass
+
+    def _run_detail_apply(self):
+        command = self._active_detail_apply
+        self._close_confirm_popup()
+        if not callable(command):
+            self.status_var.set("当前没有可应用的详情修改。")
+            return
+        command()
+
+    def _show_detail_confirm_popup(self):
+        if not callable(self._active_detail_apply):
+            self.status_var.set("当前没有可应用的详情修改。")
+            return
+        if self._confirm_popup is not None:
+            try:
+                self._confirm_popup.focus_force()
+            except Exception:
+                pass
+            return
+        popup = tk.Toplevel(self)
+        popup.transient(self)
+        popup.overrideredirect(True)  # 去除系统窗口边框，避免看起来像“蘑菇”
+        popup.configure(bg=PALETTE["surface"])
+        popup.attributes("-topmost", True)
+        frame = tk.Frame(
+            popup,
+            bg=PALETTE["surface"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            padx=16,
+            pady=16,
+        )
+        frame.pack(fill="both", expand=True)
+        tk.Label(
+            frame,
+            text="确认应用当前修改吗？",
+            bg=PALETTE["surface"],
+            fg=PALETTE["text"],
+            font=(FONT, 10, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            frame,
+            text="按 Enter 确认\n点击其他地方或按 Esc 取消",
+            bg=PALETTE["surface"],
+            fg=PALETTE["muted"],
+            font=(FONT, 9),
+            anchor="w",
+            justify="left",
+            pady=8,
+        ).pack(fill="x")
+        
+        btn_wrap = tk.Frame(frame, bg=PALETTE["surface"])
+        btn_wrap.pack(fill="x", pady=(4, 0))
+        self._tk_button(btn_wrap, "确认 (Enter)", self._run_detail_apply, primary=True, small=True).pack(side="right")
+        self._tk_button(btn_wrap, "取消 (Esc)", self._close_confirm_popup, small=True).pack(side="right", padx=8)
+
+        def _on_focus_out(_event=None):
+            popup.after(50, self._dismiss_confirm_if_focus_lost)
+
+        popup.bind("<FocusOut>", _on_focus_out, add="+")
+        popup.bind("<Escape>", lambda _e: self._close_confirm_popup())
+        popup.bind("<Return>", lambda _e: self._run_detail_apply())
+        popup.bind("<KP_Enter>", lambda _e: self._run_detail_apply())
+
+        anchor = self._detail_action_btn or self
+        try:
+            popup.update_idletasks()
+            x = anchor.winfo_rootx() + max(anchor.winfo_width() - popup.winfo_reqwidth(), 0)
+            y = anchor.winfo_rooty() - popup.winfo_reqheight() - 8
+            if y < self.winfo_rooty() + 40:
+                y = anchor.winfo_rooty() + anchor.winfo_height() + 8
+            popup.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+        self._confirm_popup = popup
+        try:
+            popup.focus_force()
+        except Exception:
+            pass
+
+    def _dismiss_confirm_if_focus_lost(self):
+        popup = self._confirm_popup
+        if popup is None:
+            return
+        try:
+            focus_widget = popup.focus_displayof()
+        except Exception:
+            focus_widget = None
+        if focus_widget is None or focus_widget.winfo_toplevel() is not popup:
+            self._close_confirm_popup()
+
+    def _request_detail_apply(self, event=None):
+        if event is not None:
+            try:
+                if event.widget.winfo_toplevel() is not self:
+                    return
+            except Exception:
+                return
+        self._show_detail_confirm_popup()
+        return "break"
 
     # ---------- 加载 ----------
     def _detect_award(self):
@@ -547,8 +1197,14 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             if messagebox:
                 messagebox.showerror("加载失败", str(exc), parent=self)
             return
+        # 加载后先排序
+        self._sort_rows()
         self.model = FileTreeModel(self.header, self.rows)
+        self.model.ensure_row_ids()
+        # 重建 doc_to_codes 和绑定 tokens
         self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
+        self.model.rebuild()
         # 用文件里真实的工作区名（首行锚定值）刷新显示
         detected = self._detect_award()
         if detected:
@@ -564,6 +1220,25 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._update_undo_buttons()
         self.status_var.set(f"已加载 {len(self.rows)} 行 · 工作区：{self.award_name}")
 
+    def _row_id(self, row):
+        if not self.model:
+            return ""
+        return self.model.row_id(row)
+
+    def _find_row_index_by_id(self, row_id):
+        if not row_id:
+            return -1
+        for ri, row in enumerate(self.rows):
+            if self._row_id(row) == row_id:
+                return ri
+        return -1
+
+    def _find_row_by_id(self, row_id):
+        ri = self._find_row_index_by_id(row_id)
+        if 0 <= ri < len(self.rows):
+            return self.rows[ri]
+        return None
+
     def _effective_step_for_row(self, ri):
         if not (0 <= ri < len(self.rows)):
             return ""
@@ -575,6 +1250,24 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         if segs:
             return self.model._top_step(segs[0])
         return ""
+
+    def _display_path(self, path):
+        if not self.model:
+            return tuple(path)
+        return self.model._display_path(path)
+
+    def _display_path_name(self, item):
+        if not self.model:
+            return item
+        return self.model._display_seg(item)
+
+    def _usage_owner_text(self, owner):
+        if isinstance(owner, tuple):
+            if self.model and self.model._is_top_key(owner):
+                return str(self._display_path_name(owner))
+            parts = [str(self._display_path_name(part)) for part in owner]
+            return " / ".join(part for part in parts if part)
+        return str(owner)
 
     def _codes_in_same_step(self, ri):
         step_value = _clean(self._effective_step_for_row(ri))
@@ -622,6 +1315,20 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             return f"{order_value}_step_{step_value}_{file_stem}"
         return file_stem
 
+    def _suggest_saved_name_base(self, ri, file_type, selected_code_ids=None):
+        if not (0 <= ri < len(self.rows)):
+            return "readme" if file_type == "说明" else "code"
+        row = self.rows[ri]
+        deploy_name = self.model.cell(row, "相应代码和说明文件")
+        deploy_base, _ = self._split_file_name_for_form(deploy_name, file_type)
+        deploy_num, _ = self._split_numbered_name(deploy_base, count=1)
+        sub_num = deploy_num[0] if deploy_num else ""
+        if file_type == "说明":
+            return f"readme{sub_num}" if sub_num else "readme"
+        step_value = _clean(self._effective_step_for_row(ri))
+        step_num = step_value if step_value.isdigit() and 0 <= int(step_value) <= NAME_NUMBER_LIMIT else ""
+        return self._compose_numbered_name([step_num, sub_num], "code", fallback_name="code")
+
     def _code_choices_in_same_step(self, ri):
         step_value = _clean(self._effective_step_for_row(ri))
         items = []
@@ -649,20 +1356,26 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 continue
             if self.model.cell(row, "代码/说明") != "说明":
                 continue
+            doc_id = self._row_id(row)
+            if not doc_id:
+                continue
             tokens = _split_binding_tokens(self.model.cell(row, "其他"))
             if not tokens:
                 continue
-            doc_to_codes.setdefault(ri, set())
+            doc_to_codes.setdefault(doc_id, set())
             for token in tokens:
-                token_to_doc.setdefault(token, []).append(ri)
+                token_to_doc.setdefault(token, []).append(doc_id)
         for ri, row in enumerate(self.rows):
             if not self.model.cell(row, "相应代码和说明文件"):
                 continue
             if self.model.cell(row, "代码/说明") != "代码":
                 continue
+            code_id = self._row_id(row)
+            if not code_id:
+                continue
             for token in _split_binding_tokens(self.model.cell(row, "其他")):
-                for doc_ri in token_to_doc.get(token, []):
-                    doc_to_codes.setdefault(doc_ri, set()).add(ri)
+                for doc_id in token_to_doc.get(token, []):
+                    doc_to_codes.setdefault(doc_id, set()).add(code_id)
         return doc_to_codes
 
     def _recompute_and_write_binding_tokens(self):
@@ -673,27 +1386,31 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 continue
             if self.model.cell(row, "代码/说明") != "说明":
                 continue
-            code_set = set(self._doc_to_codes.get(ri, set()))
-            allowed = {cri for cri, _ in self._codes_in_same_step(ri)}
+            row_id = self._row_id(row)
+            if not row_id:
+                continue
+            code_set = set(self._doc_to_codes.get(row_id, set()))
+            allowed = {self._row_id(self.rows[cri]) for cri, _ in self._codes_in_same_step(ri)}
             code_set = {c for c in code_set if c in allowed}
             if not code_set:
-                doc_ids[ri] = ""
+                doc_ids[row_id] = ""
                 continue
-            doc_ids[ri] = next(id_iter)
+            doc_ids[row_id] = next(id_iter)
         code_to_doc_ids = {}
-        for doc_ri, token in doc_ids.items():
+        for doc_row_id, token in doc_ids.items():
             if not token:
                 continue
-            for code_ri in self._doc_to_codes.get(doc_ri, set()):
-                code_to_doc_ids.setdefault(code_ri, set()).add(token)
+            for code_row_id in self._doc_to_codes.get(doc_row_id, set()):
+                code_to_doc_ids.setdefault(code_row_id, set()).add(token)
         for ri, row in enumerate(self.rows):
             if not self.model.cell(row, "相应代码和说明文件"):
                 continue
             typ = self.model.cell(row, "代码/说明")
+            row_id = self._row_id(row)
             if typ == "说明":
-                self.model._set_on(row, "其他", doc_ids.get(ri, "") or None)
+                self.model._set_on(row, "其他", doc_ids.get(row_id, "") or None)
             elif typ == "代码":
-                tokens = sorted(code_to_doc_ids.get(ri, set()))
+                tokens = sorted(code_to_doc_ids.get(row_id, set()))
                 self.model._set_on(row, "其他", _join_binding_tokens(tokens) or None)
 
     def _find_saved_name_conflict(self, new_saved_name, exclude_ri=None):
@@ -721,6 +1438,35 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 "rel_dir": rel_dir,
             }
         return None
+
+    def _collect_saved_name_conflicts(self):
+        seen = {}
+        conflicts = []
+        for ri, row in enumerate(self.rows):
+            saved_name = self.model.cell(row, "保存在资料中的名称")
+            if not saved_name:
+                continue
+            seen.setdefault(saved_name.lower(), []).append((ri, row, saved_name))
+        for _key, items in seen.items():
+            if len(items) <= 1:
+                continue
+            labels = []
+            row_ids = []
+            saved_name = items[0][2]
+            for ri, row, _ in items:
+                deployed = self.model.cell(row, "相应代码和说明文件")
+                segs = self.model._segments(row)
+                rel_dir = "/".join([s for s in segs if s]) or "（工作区根目录）"
+                labels.append(f"第 {ri + 2} 行 · {rel_dir} · {deployed or saved_name}")
+                rid = self._row_id(row)
+                if rid:
+                    row_ids.append(rid)
+            conflicts.append({
+                "saved_name": saved_name,
+                "items": labels,
+                "row_ids": row_ids,
+            })
+        return conflicts
 
     def edit_award_name(self):
         if simpledialog is None:
@@ -762,6 +1508,9 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 self.model.rebuild()
             except Exception:
                 pass
+        self._sort_rows()
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
         self.populate_tree()
         self._mark_dirty("已更新工作区名（未保存）")
         self._update_undo_buttons()
@@ -779,9 +1528,21 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                     pass
         return opened
 
+    def on_expand_all(self):
+        self._preserve_manual_open_state = True
+        self._open_paths = {tuple(meta[1]) for _iid, meta in self._item_meta.items() if meta[0] == "folder"}
+        self.populate_tree()
+        self.status_var.set("已展开全部文件夹。")
+
+    def on_collapse_all(self):
+        self._preserve_manual_open_state = True
+        self._open_paths = set()
+        self.populate_tree()
+        self.status_var.set("已收起全部文件夹。")
+
     def populate_tree(self):
         # 重建前先记住展开状态，避免每次都全部展开
-        if not self._first_populate:
+        if not self._first_populate and getattr(self, "_preserve_manual_open_state", False) is not True:
             self._open_paths = self._capture_open()
         for iid in self.tree.get_children(""):
             self.tree.delete(iid)
@@ -793,6 +1554,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             self._insert_folder(child, "")
         self._insert_outputs(root, "")
         self._first_populate = False
+        self._preserve_manual_open_state = False
 
     def _folder_open_state(self, path):
         # 首次加载：仅展开顶层；之后：沿用用户记忆的展开状态
@@ -825,7 +1587,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             tag = "file_code" if typ == "代码" else "file_doc"
             iid = self.tree.insert(parent_iid, "end", text=f"{icon} {name}",
                                    values=(typ, order, group), tags=(tag,))
-            self._item_meta[iid] = ("file", ri)
+            self._item_meta[iid] = ("file", self._row_id(row))
 
     def _insert_outputs(self, node, parent_iid):
         for ri in node["outputs"]:
@@ -835,7 +1597,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             label = f"输出文件 · {marker}" + (f" → {code}" if code else "")
             iid = self.tree.insert(parent_iid, "end", text="📤 " + label,
                                    values=("输出", "", ""), tags=("output",))
-            self._item_meta[iid] = ("output", ri)
+            self._item_meta[iid] = ("output", self._row_id(row))
 
     # ---------- 定位 / 揭示新建项 ----------
     def _find_iid(self, meta):
@@ -872,10 +1634,35 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
 
     def _restore(self, snapshot):
         self.rows[:] = copy.deepcopy(snapshot)   # 原地替换内容（model 共享同一对象）
+        self._sort_rows()
         self.model.rebuild()
+        # 重建 doc_to_codes 映射关系（重要！每次 rows 变化后都要这样做！）
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
         self._selected = None
+        self._selected_batch = []
         self.populate_tree()
         self._update_undo_buttons()
+
+    def _sort_rows(self):
+        """始终严格按步骤（step）排序所有行，不管多乱。"""
+        step_ci = self.header.index("步骤") if "步骤" in self.header else -1
+
+        def row_key(row):
+            step_str = ""
+            if step_ci >= 0 and step_ci < len(row):
+                step_str = _clean(row[step_ci])
+            try:
+                return int(step_str)
+            except (ValueError, TypeError):
+                return float('inf')  # 没有 step 或无效的放最后
+        self.rows.sort(key=row_key)
+
+    def _find_row_index(self, target_row):
+        for candidate_ri, candidate_row in enumerate(self.rows):
+            if candidate_row is target_row:
+                return candidate_ri
+        return -1
 
     def undo(self):
         if not self._undo_stack:
@@ -921,21 +1708,40 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
     def on_select(self, _e=None):
         sel = self.tree.selection()
         if not sel:
+            self._selected = None
+            self._selected_batch = []
             return
-        meta = self._item_meta.get(sel[0])
+        metas = [self._item_meta.get(iid) for iid in sel]
+        metas = [meta for meta in metas if meta]
+        if not metas:
+            self._selected = None
+            self._selected_batch = []
+            return
+        focus_iid = self.tree.focus()
+        meta = self._item_meta.get(focus_iid) if focus_iid else None
         if not meta:
-            return
+            meta = metas[0]
         self._selected = meta
+        self._selected_batch = metas
         kind, key = meta
-        self._detail_state = {}
-        for w in self.detail.winfo_children():
-            w.destroy()
+        self._clear_detail_panel()
+        if len(metas) > 1:
+            self.right_title.config(text=f"已选中 {len(metas)} 项")
+            self._field(self.detail, "批量操作", f"当前已多选 {len(metas)} 项", readonly=True)
+            self._field(self.detail, "提示", "可直接按 Delete/Backspace 或点击“删除”进行批量删除。", readonly=True)
+            return
         if kind == "file":
-            self._form_file(key)
+            if hasattr(self, "notebook"):
+                self.notebook.select(0)
+            ri = self._find_row_index_by_id(key)
+            if ri != -1:
+                self._form_file(ri)
         elif kind == "folder":
             self._form_folder(key)
         elif kind == "output":
-            self._form_output(key)
+            ri = self._find_row_index_by_id(key)
+            if ri != -1:
+                self._form_output(ri)
         else:
             self.right_title.config(text="工作区根目录")
 
@@ -964,20 +1770,92 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
     def _normalize_extension(self, text, file_type="代码"):
         text = _clean(text)
         if not text:
-            return _default_extension_for_type(file_type)
+            return ""
         if not text.startswith("."):
             text = "." + text
         return text
+
+    def _extension_options(self, file_type, current_value=""):
+        options = list(CODE_EXTENSION_OPTIONS if file_type == "代码" else DOC_EXTENSION_OPTIONS)
+        current = self._normalize_extension(current_value, file_type)
+        if current and current not in options:
+            options.append(current)
+        return options
+
+    def _number_choice_values(self, limit=NAME_NUMBER_LIMIT):
+        return [BLANK_OPTION_LABEL] + [str(i) for i in range(0, limit + 1)]
+
+    def _normalize_number_choice(self, value, limit=NAME_NUMBER_LIMIT):
+        text = _clean(value)
+        if text.isdigit() and 0 <= int(text) <= limit:
+            return text
+        return BLANK_OPTION_LABEL
+
+    def _save_number_choice(self, value):
+        text = _clean(value)
+        return "" if text == BLANK_OPTION_LABEL else text
+
+    def _split_numbered_name(self, text, count=1):
+        raw = _clean(text)
+        if raw == UNNAMED_PLACEHOLDER:
+            raw = DEFAULT_NEW_FILE_BASENAME
+        numbers = [""] * max(1, int(count or 1))
+        if not raw:
+            return numbers, ""
+        parts = raw.split("_")
+        consumed = 0
+        max_prefix_count = min(len(numbers), max(0, len(parts) - 1))
+        for idx in range(max_prefix_count):
+            part = _clean(parts[idx])
+            if part.isdigit() and 0 <= int(part) <= NAME_NUMBER_LIMIT:
+                numbers[idx] = part
+                consumed += 1
+            else:
+                break
+        if consumed > 0:
+            remainder = "_".join(parts[consumed:])
+            if remainder:
+                return numbers, remainder
+        return numbers, raw
+
+    def _compose_numbered_name(self, numbers, name, fallback_name=""):
+        base_name = _clean(name) or _clean(fallback_name)
+        parts = [self._save_number_choice(num) for num in (numbers or [])]
+        parts = [p for p in parts if p]
+        if base_name:
+            parts.append(base_name)
+        return "_".join(parts)
+
+    def _split_readme_name(self, text):
+        raw = _clean(text)
+        if not raw:
+            return ""
+        match = re.fullmatch(r"readme([0-9]{0,3})", raw, flags=re.IGNORECASE)
+        if not match:
+            return ""
+        num = match.group(1) or ""
+        if num.isdigit() and 0 <= int(num) <= README_NUMBER_LIMIT:
+            return num
+        return ""
 
     def _split_file_name_for_form(self, name, file_type):
         raw_name = _clean(name)
         base_name, ext_name = os.path.splitext(raw_name)
         if not ext_name:
             base_name = raw_name
-            ext_name = _default_extension_for_type(file_type)
+            ext_name = ""
         if base_name == UNNAMED_PLACEHOLDER:
-            base_name = ""
+            base_name = DEFAULT_NEW_FILE_BASENAME
         return base_name, self._normalize_extension(ext_name, file_type)
+
+    def _compose_file_name(self, base_name, ext_name, fallback_base=""):
+        base = _clean(base_name)
+        ext = self._normalize_extension(ext_name)
+        if not base and fallback_base:
+            base = fallback_base
+        if not base:
+            return ext
+        return f"{base}{ext}" if ext else base
 
     def _normalize_code_subdir(self, value):
         text = _clean(value)
@@ -1047,6 +1925,256 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             self._detail_state[state_key] = payload
         return payload
 
+    def _numbered_name_field(self, parent, label, number_values, name_value, hint="", placeholder="", ext_value=None, ext_readonly=False, ext_choices=None, ext_file_type="代码"):
+        wrap = tk.Frame(parent, bg=PALETTE["surface"])
+        wrap.pack(fill="x", pady=(0, 12))
+        tk.Label(wrap, text=label, bg=PALETTE["surface"], fg=PALETTE["secondary"],
+                 font=(FONT, 9, "bold"), anchor="w").pack(fill="x")
+        row = tk.Frame(wrap, bg=PALETTE["surface"])
+        row.pack(fill="x", pady=(4, 0))
+        number_vars = []
+        number_combos = []
+        col = 0
+        for raw_value in (number_values or []):
+            var = tk.StringVar(value=self._normalize_number_choice(raw_value))
+            combo = ttk.Combobox(row, textvariable=var, values=self._number_choice_values(), state="readonly", width=7)
+            combo.grid(row=0, column=col, sticky="w")
+            number_vars.append(var)
+            number_combos.append(combo)
+            col += 1
+
+        row.grid_columnconfigure(col, weight=1)
+        text_value = _clean(name_value)
+        state = {"placeholder": not bool(text_value)}
+        base_var = tk.StringVar(value=text_value or placeholder)
+        base_ent = tk.Entry(
+            row,
+            textvariable=base_var,
+            font=(FONT, 10),
+            relief="flat",
+            bd=0,
+            bg=PALETTE["input_bg"],
+            fg=PALETTE["muted"] if state["placeholder"] else PALETTE["text"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            highlightcolor=PALETTE["accent"],
+            insertbackground=PALETTE["text"],
+        )
+        base_ent.grid(row=0, column=col, sticky="ew", padx=(8, 0), ipady=5)
+        col += 1
+
+        ext_var = None
+        ext_ent = None
+        if ext_value is not None:
+            ext_var = tk.StringVar(value=self._normalize_extension(ext_value))
+            ext_items = list(ext_choices or self._extension_options(ext_file_type, ext_value))
+            if ext_var.get() and ext_var.get() not in ext_items:
+                ext_items.append(ext_var.get())
+            ext_ent = ttk.Combobox(
+                row,
+                textvariable=ext_var,
+                values=ext_items,
+                state="readonly",
+                width=10,
+            )
+            ext_ent.grid(row=0, column=col, sticky="ew", padx=(8, 0), ipady=5)
+
+        def _render():
+            base_ent.configure(fg=PALETTE["muted"] if state["placeholder"] else PALETTE["text"])
+
+        def _focus_in(_event):
+            if state["placeholder"]:
+                state["placeholder"] = False
+                base_var.set("")
+                _render()
+
+        def _focus_out(_event):
+            if _clean(base_var.get()):
+                state["placeholder"] = False
+            else:
+                state["placeholder"] = True
+                base_var.set(placeholder)
+            _render()
+
+        def _set_name(value):
+            value = _clean(value)
+            state["placeholder"] = not bool(value)
+            base_var.set(value or placeholder)
+            _render()
+
+        def _set_numbers(values):
+            values = list(values or [])
+            for i, var in enumerate(number_vars):
+                raw = values[i] if i < len(values) else ""
+                var.set(self._normalize_number_choice(raw))
+
+        def _set_base(value):
+            nums, parsed_name = self._split_numbered_name(value, count=len(number_vars))
+            _set_numbers(nums)
+            _set_name(parsed_name)
+
+        base_ent.bind("<FocusIn>", _focus_in, add="+")
+        base_ent.bind("<FocusOut>", _focus_out, add="+")
+        if hint:
+            tk.Label(wrap, text=hint, bg=PALETTE["surface"], fg=PALETTE["muted"],
+                     font=(FONT, 8), anchor="w").pack(fill="x", pady=(3, 0))
+
+        payload = {
+            "number_vars": number_vars,
+            "number_combos": number_combos,
+            "base_var": base_var,
+            "base_entry": base_ent,
+            "ext_var": ext_var,
+            "ext_entry": ext_ent,
+            "get_name": lambda: "" if state["placeholder"] else _clean(base_var.get()),
+            "get_number": lambda idx=0: self._save_number_choice(number_vars[idx].get()) if 0 <= idx < len(number_vars) else "",
+            "get_numbers": lambda: [self._save_number_choice(var.get()) for var in number_vars],
+            "get_base": lambda fallback="": self._compose_numbered_name(
+                [self._save_number_choice(var.get()) for var in number_vars],
+                "" if state["placeholder"] else _clean(base_var.get()),
+                fallback_name=fallback,
+            ),
+            "get_ext": (lambda: self._normalize_extension(ext_var.get())) if ext_var is not None else (lambda: ""),
+            "set_base": _set_base,
+            "set_ext": (lambda value: ext_var.set(self._normalize_extension(value))) if ext_var is not None else (lambda value: None),
+            "set_numbers": _set_numbers,
+            "set_name": _set_name,
+        }
+        return payload
+
+    def _readme_name_field(self, parent, label, number_value, ext_value, hint=""):
+        wrap = tk.Frame(parent, bg=PALETTE["surface"])
+        wrap.pack(fill="x", pady=(0, 12))
+        tk.Label(wrap, text=label, bg=PALETTE["surface"], fg=PALETTE["secondary"],
+                 font=(FONT, 9, "bold"), anchor="w").pack(fill="x")
+        row = tk.Frame(wrap, bg=PALETTE["surface"])
+        row.pack(fill="x", pady=(4, 0))
+
+        prefix = tk.Label(
+            row,
+            text="readme",
+            bg=PALETTE["accent_soft"],
+            fg=PALETTE["text"],
+            font=(FONT, 10),
+            padx=10,
+            pady=6,
+        )
+        prefix.grid(row=0, column=0, sticky="w")
+
+        number_var = tk.StringVar(value=self._normalize_number_choice(number_value, README_NUMBER_LIMIT))
+        number_combo = ttk.Combobox(row, textvariable=number_var, values=self._number_choice_values(README_NUMBER_LIMIT), state="readonly", width=7)
+        number_combo.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        ext_var = tk.StringVar(value=self._normalize_extension(ext_value))
+        ext_items = self._extension_options("说明", ext_value)
+        ext_ent = ttk.Combobox(
+            row,
+            textvariable=ext_var,
+            values=ext_items,
+            state="readonly",
+            width=10,
+        )
+        ext_ent.grid(row=0, column=2, sticky="ew", padx=(8, 0), ipady=5)
+        row.grid_columnconfigure(2, weight=1)
+
+        def _set_base(value):
+            number_var.set(self._normalize_number_choice(self._split_readme_name(value), README_NUMBER_LIMIT))
+
+        if hint:
+            tk.Label(wrap, text=hint, bg=PALETTE["surface"], fg=PALETTE["muted"],
+                     font=(FONT, 8), anchor="w").pack(fill="x", pady=(3, 0))
+
+        return {
+            "number_vars": [number_var],
+            "number_combos": [number_combo],
+            "ext_var": ext_var,
+            "ext_entry": ext_ent,
+            "get_base": lambda fallback="": "readme" + self._save_number_choice(number_var.get()),
+            "get_ext": lambda: self._normalize_extension(ext_var.get()),
+            "get_number": lambda idx=0: self._save_number_choice(number_var.get()),
+            "set_base": _set_base,
+            "set_ext": lambda value: ext_var.set(self._normalize_extension(value)),
+        }
+
+    def _filename_pair_field(self, parent, label, base_value, ext_value, hint="", placeholder="", ext_readonly=False):
+        wrap = tk.Frame(parent, bg=PALETTE["surface"])
+        wrap.pack(fill="x", pady=(0, 12))
+        tk.Label(wrap, text=label, bg=PALETTE["surface"], fg=PALETTE["secondary"],
+                 font=(FONT, 9, "bold"), anchor="w").pack(fill="x")
+        row = tk.Frame(wrap, bg=PALETTE["surface"])
+        row.pack(fill="x", pady=(4, 0))
+        row.grid_columnconfigure(0, weight=5)
+        row.grid_columnconfigure(1, weight=2)
+
+        base_value = _clean(base_value)
+        state = {"placeholder": not bool(base_value)}
+        base_var = tk.StringVar(value=base_value or placeholder)
+        base_ent = tk.Entry(
+            row,
+            textvariable=base_var,
+            font=(FONT, 10),
+            relief="flat",
+            bd=0,
+            bg=PALETTE["input_bg"],
+            fg=PALETTE["muted"] if state["placeholder"] else PALETTE["text"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            highlightcolor=PALETTE["accent"],
+            insertbackground=PALETTE["text"],
+        )
+        base_ent.grid(row=0, column=0, sticky="ew", ipady=5)
+
+        ext_var = tk.StringVar(value=self._normalize_extension(ext_value))
+        ext_ent = tk.Entry(
+            row,
+            textvariable=ext_var,
+            font=(FONT, 10),
+            relief="flat",
+            bd=0,
+            bg=PALETTE["accent_soft"] if ext_readonly else PALETTE["input_bg"],
+            fg=PALETTE["text"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            highlightcolor=PALETTE["accent"],
+            insertbackground=PALETTE["text"],
+            state="readonly" if ext_readonly else "normal",
+            width=12,
+        )
+        ext_ent.grid(row=0, column=1, sticky="ew", padx=(8, 0), ipady=5)
+
+        def _render():
+            base_ent.configure(fg=PALETTE["muted"] if state["placeholder"] else PALETTE["text"])
+
+        def _focus_in(_event):
+            if state["placeholder"]:
+                state["placeholder"] = False
+                base_var.set("")
+                _render()
+
+        def _focus_out(_event):
+            if _clean(base_var.get()):
+                state["placeholder"] = False
+            else:
+                state["placeholder"] = True
+                base_var.set(placeholder)
+            _render()
+
+        base_ent.bind("<FocusIn>", _focus_in, add="+")
+        base_ent.bind("<FocusOut>", _focus_out, add="+")
+        if hint:
+            tk.Label(wrap, text=hint, bg=PALETTE["surface"], fg=PALETTE["muted"],
+                     font=(FONT, 8), anchor="w").pack(fill="x", pady=(3, 0))
+        return {
+            "base_var": base_var,
+            "ext_var": ext_var,
+            "base_entry": base_ent,
+            "ext_entry": ext_ent,
+            "get_base": lambda: "" if state["placeholder"] else _clean(base_var.get()),
+            "get_ext": lambda: self._normalize_extension(ext_var.get()),
+            "set_base": lambda value: base_var.set(_clean(value)),
+            "set_ext": lambda value: ext_var.set(self._normalize_extension(value)),
+        }
+
     def _choice_field(self, parent, label, values, current="", hint="", state_key=None):
         wrap = tk.Frame(parent, bg=PALETTE["surface"])
         wrap.pack(fill="x", pady=(0, 12))
@@ -1070,39 +2198,45 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         return payload
 
     def _next_available_number(self, usage_map, limit):
-        for n in range(1, limit + 1):
+        for n in range(0, limit + 1):
             if n not in usage_map:
                 return n
-        used = sorted(n for n in usage_map.keys() if 1 <= int(n) <= limit)
-        return min(limit, max(1, used[-1])) if used else 1
+        used = sorted(n for n in usage_map.keys() if 0 <= int(n) <= limit)
+        return min(limit, max(0, used[-1])) if used else 0
 
-    def _build_number_choices(self, usage_map, limit, current_value):
-        current_num = int(current_value) if str(current_value).isdigit() and 1 <= int(current_value) <= limit else None
-        preferred_num = current_num or self._next_available_number(usage_map, limit)
-        ordered = list(range(1, limit + 1))
+    def _build_number_choices(self, usage_map, limit, current_value, allow_blank=False):
+        current_num = int(current_value) if str(current_value).isdigit() and 0 <= int(current_value) <= limit else None
+        preferred_num = current_num if current_num is not None else self._next_available_number(usage_map, limit)
+        ordered = list(range(0, limit + 1))
         display_to_value = {}
         values = []
+        if allow_blank:
+            values.append(BLANK_OPTION_LABEL)
+            display_to_value[BLANK_OPTION_LABEL] = ""
         for num in ordered:
             owners = usage_map.get(num, [])
             label = str(num)
             if owners:
-                preview = "、".join(owners[:2])
+                preview = "、".join(self._usage_owner_text(owner) for owner in owners[:2])
                 if len(owners) > 2:
                     preview += "..."
                 label = f"{num} · 已占用：{preview}"
             values.append(label)
             display_to_value[label] = str(num)
-        selected_num = str(current_num or preferred_num)
-        selected_label = next((label for label, value in display_to_value.items() if value == selected_num), values[0] if values else "")
+        if current_value == "" and allow_blank:
+            selected_label = BLANK_OPTION_LABEL
+        else:
+            selected_num = str(current_num if current_num is not None else preferred_num)
+            selected_label = next((label for label, value in display_to_value.items() if value == selected_num), values[0] if values else "")
         return values, display_to_value, selected_label
 
-    def _number_choice_field(self, parent, label, current_value, usage_map, limit, hint="", empty_hint="当前编号空闲。", state_key=None):
+    def _number_choice_field(self, parent, label, current_value, usage_map, limit, hint="", empty_hint="当前编号空闲。", state_key=None, allow_blank=False):
         wrap = tk.Frame(parent, bg=PALETTE["surface"])
         wrap.pack(fill="x", pady=(0, 12))
         tk.Label(wrap, text=label, bg=PALETTE["surface"], fg=PALETTE["secondary"],
                  font=(FONT, 9, "bold"), anchor="w").pack(fill="x")
         normalized_current = _clean(current_value)
-        values, display_to_value, selected_label = self._build_number_choices(usage_map, limit, normalized_current)
+        values, display_to_value, selected_label = self._build_number_choices(usage_map, limit, normalized_current, allow_blank=allow_blank)
         var = tk.StringVar(value=selected_label)
         recommended_num = str(self._next_available_number(usage_map, limit))
         recommended_label = next((label for label, value in display_to_value.items() if value == recommended_num), "")
@@ -1131,6 +2265,9 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         status = tk.Label(wrap, text="", bg=PALETTE["surface"], fg=PALETTE["muted"],
                           font=(FONT, 8), anchor="w")
         status.pack(fill="x", pady=(3, 0))
+        occupied_status = tk.Label(wrap, text="", bg=PALETTE["surface"], fg=PALETTE["muted"],
+                                   font=(FONT, 8), anchor="w", justify="left")
+        occupied_status.pack(fill="x", pady=(2, 0))
         if hint:
             tk.Label(wrap, text=hint, bg=PALETTE["surface"], fg=PALETTE["muted"],
                      font=(FONT, 8), anchor="w").pack(fill="x", pady=(2, 0))
@@ -1138,8 +2275,33 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         def get_value():
             return display_to_value.get(var.get(), "")
 
+        occupied_preview = []
+        conflict_preview = []
+        for num in sorted(usage_map):
+            owners = usage_map.get(num, [])
+            if not owners:
+                continue
+            preview = "、".join(self._usage_owner_text(owner) for owner in owners)
+            occupied_preview.append(f"{num}: {preview}")
+            if len(owners) > 1:
+                conflict_preview.append(f"{num}: {preview}")
+        occupied_text = "已占用：无" if not occupied_preview else "已占用：" + "；".join(occupied_preview)
+        conflict_text = "" if not conflict_preview else "冲突中：" + "；".join(conflict_preview)
+
         def refresh_status(*_args):
             value = get_value()
+            occupied_status.config(
+                text=occupied_text if not conflict_text else occupied_text + "\n" + conflict_text,
+                fg=PALETTE["danger"] if conflict_text else PALETTE["muted"],
+            )
+            if value == "":
+                style.map(
+                    style_name,
+                    fieldbackground=[("readonly", PALETTE["input_bg"])],
+                    foreground=[("readonly", PALETTE["text"])],
+                )
+                status.config(text="当前为空白，不写入编号。", fg=PALETTE["muted"])
+                return
             if value.isdigit():
                 owners = usage_map.get(int(value), [])
                 if owners:
@@ -1148,7 +2310,8 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                         fieldbackground=[("readonly", "#FBEAEA")],
                         foreground=[("readonly", PALETTE["danger"])],
                     )
-                    status.config(text=f"当前编号已被占用：{'、'.join(owners)}", fg=PALETTE["danger"])
+                    prefix = "当前编号存在冲突" if len(owners) > 1 else "当前编号已被占用"
+                    status.config(text=f"{prefix}：{'、'.join(self._usage_owner_text(owner) for owner in owners)}", fg=PALETTE["danger"])
                     return
             style.map(
                 style_name,
@@ -1167,6 +2330,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             "combo": combo,
             "get": get_value,
             "status": status,
+            "occupied_status": occupied_status,
             "recommended": recommended_num,
             "recommend_button": recommend_btn,
         }
@@ -1183,15 +2347,32 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             step_value = _clean((node or {}).get("step"))
             if not step_value or not step_value.isdigit():
                 continue
-            seen_steps.setdefault(step_value, []).append(path[0])
+            seen_steps.setdefault(step_value, []).append(self._usage_owner_text(path[0]))
         for step_value, owners in seen_steps.items():
             if len(owners) > 1:
                 duplicate_steps.append(f"步骤编号 {step_value} 重复：{'、'.join(owners)}")
 
         duplicate_orders = []
         seen_orders = {}
+        path_warnings = []
+        
         for ri, row in enumerate(self.rows):
-            if self.model.cell(row, "代码/说明") != "代码":
+            file_type = self.model.cell(row, "代码/说明")
+            name = _clean(self.model.cell(row, "相应代码和说明文件"))
+            subfolder = _clean(self.model.cell(row, "代码子文件夹"))
+            
+            # 扩展名与子文件夹验证（全部改为警告）
+            if file_type == "说明" and name.endswith(".docx"):
+                if subfolder:
+                    path_warnings.append(f"说明文件 {name} 建议保存在根目录，当前保存在：{subfolder}")
+            elif file_type == "代码" and name.endswith(".py"):
+                if subfolder in ("更新代码", "notebook"):
+                    path_warnings.append(f"代码文件 {name} 建议不要保存在 {subfolder} 文件夹")
+            elif file_type == "代码" and name.endswith(".ipynb"):
+                if subfolder != "notebook":
+                    path_warnings.append(f"Notebook文件 {name} 建议保存在 notebook 文件夹，当前保存在：{subfolder or '根目录'}")
+            
+            if file_type != "代码":
                 continue
             order_value = _clean(self.model.cell(row, "运行顺序"))
             if not order_value or not order_value.isdigit():
@@ -1204,24 +2385,35 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 step_text = step_value or "未分配步骤"
                 duplicate_orders.append(f"步骤 {step_text} 的运行顺序 {order_value} 重复：{'、'.join(owners)}")
 
-        errors = duplicate_steps + duplicate_orders
+        duplicate_saved_names = []
+        for conflict in self._collect_saved_name_conflicts():
+            duplicate_saved_names.append(
+                f"『保存在资料中的名称』重复：{conflict['saved_name']} -> " + "；".join(conflict["items"])
+            )
+
+        errors = duplicate_steps + duplicate_orders + duplicate_saved_names
         if errors:
             raise ValueError("保存前校验未通过：\n- " + "\n- ".join(errors))
+            
+        return path_warnings
 
     def _collect_run_order_usage(self, exclude_ri):
         usage = {}
-        step_value = _clean(self._effective_step_for_row(exclude_ri))
         for ri, row in enumerate(self.rows):
             if ri == exclude_ri:
                 continue
             if self.model.cell(row, "代码/说明") != "代码":
                 continue
-            if _clean(self._effective_step_for_row(ri)) != step_value:
-                continue
             order_value = _clean(self.model.cell(row, "运行顺序"))
             if not order_value.isdigit():
                 continue
-            usage.setdefault(int(order_value), []).append(self.model.cell(row, "相应代码和说明文件") or f"第{ri + 2}行")
+            
+            # 加上 step 前缀作为提示
+            step_value = _clean(self._effective_step_for_row(ri)) or "无步骤"
+            filename = self.model.cell(row, "相应代码和说明文件") or f"第{ri + 2}行"
+            label = f"[{step_value}] {filename}"
+            
+            usage.setdefault(int(order_value), []).append(label)
         return usage
 
     def _collect_step_usage(self, exclude_path=None):
@@ -1235,7 +2427,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             step_value = _clean((node or {}).get("step"))
             if not step_value.isdigit():
                 continue
-            usage.setdefault(int(step_value), []).append(path[0])
+            usage.setdefault(int(step_value), []).append(self._usage_owner_text(path[0]))
         return usage
 
     def _form_file(self, ri):
@@ -1246,6 +2438,10 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
 
         current_type = f["代码/说明"] or "代码"
         base_name, ext_name = self._split_file_name_for_form(f["相应代码和说明文件"], current_type)
+        name_numbers, name_stem = self._split_numbered_name(base_name, count=1)
+        if not name_stem:
+            name_stem = DEFAULT_NEW_FILE_BASENAME
+        existing_src_base, existing_src_ext = self._split_file_name_for_form(f["保存在资料中的名称"], current_type)
         type_var = tk.StringVar(value=current_type)
         self._detail_state["type_var"] = type_var
         trow = tk.Frame(pad, bg=PALETTE["surface"])
@@ -1261,36 +2457,34 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                            activebackground=PALETTE["accent_soft"], bd=0, padx=18, pady=5,
                            cursor="hand2").pack(side="left", padx=2, pady=2)
 
-        name_state = self._placeholder_field(
+        default_deploy_num = name_numbers[0] if name_numbers and name_numbers[0] else ""
+        name_state = self._numbered_name_field(
             pad,
-            "部署文件名（名称）",
-            base_name,
-            UNNAMED_PLACEHOLDER,
-            "默认占位为（未命名），保存时会自动拼接扩展名。",
-            state_key="name_var",
+            "部署文件名",
+            [default_deploy_num],
+            name_stem,
+            "格式：数字_名称 + 扩展名。数字可留空；名称里不要填写后缀。",
+            placeholder=DEFAULT_NEW_FILE_BASENAME,
+            ext_value=ext_name,
+            ext_choices=self._extension_options(current_type, ext_name),
+            ext_file_type=current_type,
         )
-        ext_var = self._field(
-            pad,
-            "扩展名",
-            ext_name,
-            "默认：说明 .docx，代码 .py；可手工修改。",
-            state_key="ext_var",
-        )
-        ext_state = {"programmatic": False, "manual_override": ext_name not in (".py", ".docx")}
+        ext_state = {"programmatic": False, "manual_override": bool(ext_name) and ext_name != _default_extension_for_type(current_type)}
 
         def _set_ext_value(value):
             ext_state["programmatic"] = True
-            ext_var.set(self._normalize_extension(value, type_var.get()))
+            name_state["set_ext"](value)
             ext_state["programmatic"] = False
 
         def _on_ext_change(*_args):
-            normalized = self._normalize_extension(ext_var.get(), type_var.get())
-            if normalized != ext_var.get():
+            raw_ext = name_state["ext_var"].get()
+            normalized = self._normalize_extension(raw_ext, type_var.get())
+            if normalized != raw_ext:
                 _set_ext_value(normalized)
                 return
             if ext_state["programmatic"]:
                 return
-            ext_state["manual_override"] = normalized not in (".py", ".docx")
+            ext_state["manual_override"] = bool(normalized) and normalized != _default_extension_for_type(type_var.get())
 
         sub_field = self._choice_field(
             pad,
@@ -1312,43 +2506,174 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 return
             sub_state["manual_override"] = sub_field["var"].get() not in (BLANK_OPTION_LABEL, "更新代码")
 
+        def _sync_subdir_widget(force_actual=False):
+            # 说明文件不应该有代码子文件夹，始终显示为空白并禁用选择。
+            desired = self._normalize_code_subdir(f["代码子文件夹"])
+            if type_var.get() == "说明":
+                desired = BLANK_OPTION_LABEL
+            elif not sub_state["manual_override"] and not force_actual:
+                desired = sub_field["var"].get()
+            _set_subdir_value(desired)
+            sub_field["combo"].config(state="disabled" if type_var.get() == "说明" else "readonly")
+
+        src_meta = {"manual_override": bool(existing_src_base), "programmatic": False}
+        src_state = {}
+        src_warning = tk.Label(pad, text="", bg=PALETTE["surface"], fg=PALETTE["danger"],
+                               font=(FONT, 8), anchor="w", justify="left")
+
+        def _current_step_small_number():
+            step_value = _clean(self._effective_step_for_row(ri))
+            return step_value if step_value.isdigit() and 0 <= int(step_value) <= NAME_NUMBER_LIMIT else ""
+
+        def _suggest_saved_base_from_current():
+            deploy_num = name_state["get_number"]()
+            if type_var.get() == "说明":
+                return f"readme{deploy_num}" if deploy_num else "readme"
+            return self._compose_numbered_name(
+                [_current_step_small_number(), deploy_num],
+                "code",
+                fallback_name="code",
+            )
+
+        src_wrap = tk.Frame(pad, bg=PALETTE["surface"])
+        src_wrap.pack(fill="x", pady=(0, 0))
+        src_warning.pack(fill="x", pady=(0, 8))
+
+        def _set_src_base(value):
+            src_meta["programmatic"] = True
+            src_state["field"]["set_base"](value)
+            src_meta["programmatic"] = False
+
+        def _set_src_ext(value):
+            src_meta["programmatic"] = True
+            src_state["field"]["set_ext"](value)
+            src_meta["programmatic"] = False
+
+        def refresh_src_warning(*_args):
+            candidate = self._compose_file_name(src_state["field"]["get_base"](), src_state["field"]["get_ext"]())
+            conflict = self._find_saved_name_conflict(candidate, exclude_ri=ri)
+            if not candidate:
+                src_warning.config(text="", fg=PALETTE["danger"])
+                return
+            if conflict:
+                where = conflict.get("rel_dir") or "（工作区根目录）"
+                src_warning.config(
+                    text=f"警告：资料文件名冲突。当前为 {candidate}；重复于第 {conflict.get('sheet_row')} 行 · {where} · {conflict.get('label')}。可先继续编辑，但保存时会失败。",
+                    fg=PALETTE["danger"],
+                )
+                return
+            src_warning.config(text="当前资料文件名未发现冲突。", fg=PALETTE["muted"])
+
+        def _bind_saved_field_traces(field):
+            def _mark_manual(*_args):
+                if src_meta["programmatic"]:
+                    return
+                src_meta["manual_override"] = True
+                refresh_src_warning()
+
+            for number_var in field.get("number_vars", []):
+                number_var.trace_add("write", _mark_manual)
+            if field.get("base_var") is not None:
+                field["base_var"].trace_add("write", _mark_manual)
+            if field.get("ext_var") is not None:
+                field["ext_var"].trace_add("write", lambda *_args: refresh_src_warning())
+
+        def render_saved_name_field():
+            for child in src_wrap.winfo_children():
+                child.destroy()
+            current_base = existing_src_base or _suggest_saved_base_from_current()
+            current_ext = existing_src_ext or name_state["get_ext"]()
+            if src_state.get("field"):
+                current_base = src_state["field"]["get_base"]() or current_base
+                current_ext = src_state["field"]["get_ext"]() or current_ext
+            if type_var.get() == "说明":
+                current_num = self._split_readme_name(current_base)
+                field = self._readme_name_field(
+                    src_wrap,
+                    "保存在资料中的名称",
+                    current_num or name_state["get_number"](),
+                    current_ext,
+                    "格式：readmeN + 扩展名。N 默认跟随部署文件序号；扩展名与部署文件保持一致。",
+                )
+            else:
+                src_numbers, src_stem = self._split_numbered_name(current_base, count=2)
+                use_existing_prefixes = bool(existing_src_base)
+                field = self._numbered_name_field(
+                    src_wrap,
+                    "保存在资料中的名称",
+                    [
+                        src_numbers[0] if use_existing_prefixes else (src_numbers[0] if src_numbers and src_numbers[0] else _current_step_small_number()),
+                        src_numbers[1] if use_existing_prefixes else (src_numbers[1] if len(src_numbers) > 1 and src_numbers[1] else name_state["get_number"]()),
+                    ],
+                    src_stem or "code",
+                    "格式：步骤号_子文件号_名称 + 扩展名。默认名称为 code；扩展名与部署文件保持一致。",
+                    placeholder="code",
+                    ext_value=current_ext,
+                    ext_readonly=True,
+                )
+            src_state["field"] = field
+            _bind_saved_field_traces(field)
+            if not src_meta["manual_override"]:
+                _set_src_base(_suggest_saved_base_from_current())
+            _set_src_ext(name_state["get_ext"]())
+            refresh_src_warning()
+
         def _on_type_change(*_args):
-            current_ext = self._normalize_extension(ext_var.get(), type_var.get())
-            if not ext_state["manual_override"] and current_ext in (".py", ".docx"):
+            current_ext = name_state["get_ext"]()
+            name_state["ext_entry"].configure(values=self._extension_options(type_var.get(), current_ext))
+            if not ext_state["manual_override"] and current_ext in ("", ".py", ".docx", ".ipynb", ".md"):
                 _set_ext_value(_default_extension_for_type(type_var.get()))
-            if not sub_state["manual_override"]:
-                if type_var.get() == "说明":
-                    _set_subdir_value(BLANK_OPTION_LABEL)
-                elif sub_field["var"].get() == BLANK_OPTION_LABEL:
-                    _set_subdir_value("更新代码")
+            _sync_subdir_widget(force_actual=True)
+            render_saved_name_field()
+            render_order_field()  # 重新渲染运行顺序字段
             render_dynamic_section()
 
-        ext_var.trace_add("write", _on_ext_change)
+        name_state["ext_var"].trace_add("write", _on_ext_change)
         type_var.trace_add("write", _on_type_change)
         sub_field["var"].trace_add("write", _on_subdir_change)
-
-        src_var = self._field(
-            pad,
-            "保存在资料中的名称",
-            f["保存在资料中的名称"],
-            "资料里的源文件名。",
-            state_key="src_var",
-        )
+        _sync_subdir_widget(force_actual=True)
+        name_state["base_var"].trace_add("write", lambda *_args: (not src_meta["manual_override"]) and render_saved_name_field())
+        for num_var in name_state.get("number_vars", []):
+            num_var.trace_add("write", lambda *_args: (not src_meta["manual_override"]) and render_saved_name_field())
+        name_state["ext_var"].trace_add("write", lambda *_args: (_set_src_ext(name_state["get_ext"]()), refresh_src_warning()))
+        render_saved_name_field()
 
         tk.Frame(pad, bg=PALETTE["border"], height=1).pack(fill="x", pady=10)
         adv = tk.Label(pad, text="流水线与配套（高级）", bg=PALETTE["surface"],
                        fg=PALETTE["secondary"], font=(FONT, 9, "bold"), anchor="w")
         adv.pack(fill="x", pady=(0, 6))
-        order_field = self._number_choice_field(
-            pad,
-            "运行顺序（运行顺序）",
-            f["运行顺序"],
-            self._collect_run_order_usage(ri),
-            RUN_ORDER_LIMIT,
-            "从 1-100 中选择；优先给出当前可用序号。",
-            empty_hint="当前序号空闲。",
-            state_key="order_var",
-        )
+        
+        order_wrap = tk.Frame(pad, bg=PALETTE["surface"])
+        order_wrap.pack(fill="x", pady=(0, 0))
+        order_field = None
+        
+        def render_order_field():
+            for child in order_wrap.winfo_children():
+                child.destroy()
+            if type_var.get() == "代码":
+                nonlocal order_field
+                order_field = self._number_choice_field(
+                    order_wrap,
+                    "运行顺序（运行顺序）",
+                    f["运行顺序"],
+                    self._collect_run_order_usage(ri),
+                    RUN_ORDER_LIMIT,
+                    "可选 （空白）、0-100；说明不写顺序，代码可使用 0 作为合法顺序。",
+                    empty_hint="当前序号空闲。",
+                    state_key="order_var",
+                    allow_blank=True,
+                )
+                self._detail_state["order_field"] = order_field
+            else:
+                # 说明类型不需要运行顺序
+                tk.Label(order_wrap, text="说明类型文件不需要运行顺序", bg=PALETTE["surface"],
+                         fg=PALETTE["muted"], font=(FONT, 9), anchor="w").pack(fill="x", pady=(4, 0))
+                if "order_var" in self._detail_state:
+                    del self._detail_state["order_var"]
+                if "order_field" in self._detail_state:
+                    del self._detail_state["order_field"]
+        
+        render_order_field()
         note_var = self._field(
             pad,
             "备注（备注）",
@@ -1393,70 +2718,90 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 sb.pack(side="right", fill="y")
                 dynamic_state["lb"] = lb
                 self._detail_state["code_listbox"] = lb
-                selected_codes = set(self._doc_to_codes.get(ri, set()))
+                selected_codes = set(self._doc_to_codes.get(self._row_id(self.rows[ri]), set()))
+                has_choices = False
                 for idx, (cri, cname) in enumerate(self._codes_in_same_step(ri)):
-                    dynamic_state["code_ris"].append(cri)
+                    has_choices = True
+                    dynamic_state["code_ris"].append(self._row_id(self.rows[cri]))
                     lb.insert("end", cname)
-                    if cri in selected_codes:
+                    if self._row_id(self.rows[cri]) in selected_codes:
                         lb.selection_set(idx)
+                if not has_choices:
+                    tk.Label(
+                        wrap,
+                        text="当前 step 下还没有可绑定的代码文件。",
+                        bg=PALETTE["surface"],
+                        fg=PALETTE["muted"],
+                        font=(FONT, 8),
+                        anchor="w",
+                    ).pack(fill="x", pady=(4, 0))
             else:
                 bound_docs = []
                 for doc_ri, doc_name in self._docs_in_same_step(ri):
-                    if ri in self._doc_to_codes.get(doc_ri, set()):
+                    if self._row_id(self.rows[ri]) in self._doc_to_codes.get(self._row_id(self.rows[doc_ri]), set()):
                         bound_docs.append(doc_name)
                 self._field(dynamic_wrap, "绑定说明", "；".join(bound_docs) if bound_docs else "", readonly=True)
             self._detail_state["code_row_indices"] = list(dynamic_state["code_ris"])
+            if dynamic_state["lb"] is not None:
+                dynamic_state["lb"].bind("<<ListboxSelect>>", refresh_src_warning, add="+")
 
         render_dynamic_section()
+        refresh_src_warning()
 
         def apply():
-            new_src = (src_var.get() or "").strip()
-            old_src = _clean(f.get("保存在资料中的名称"))
-            if new_src and new_src != old_src:
-                conflict = self._find_saved_name_conflict(new_src, exclude_ri=ri)
-                if conflict and messagebox:
-                    where = conflict.get("rel_dir") or "（工作区根目录）"
-                    messagebox.showerror(
-                        "名称冲突",
-                        "『保存在资料中的名称』必须与现有文件名不同。\n\n"
-                        f"你填写：{new_src}\n"
-                        f"撞名：第 {conflict.get('sheet_row')} 行 · {where} · {conflict.get('label')}",
-                        parent=self,
-                    )
-                    return
+            chosen = set()
+            if type_var.get() == "说明" and dynamic_state["lb"] is not None:
+                for i in dynamic_state["lb"].curselection():
+                    if 0 <= i < len(dynamic_state["code_ris"]):
+                        chosen.add(dynamic_state["code_ris"][i])
+            if not src_meta["manual_override"]:
+                _set_src_base(_suggest_saved_base_from_current())
+            new_src = self._compose_file_name(src_state["field"]["get_base"](), src_state["field"]["get_ext"]())
+            refresh_src_warning()
 
             self._push_undo()
-            base_value = name_state["get"]() or UNNAMED_PLACEHOLDER
-            full_name = f"{base_value}{self._normalize_extension(ext_var.get(), type_var.get())}"
-            self.model.edit_file(ri, {
+            target_row = self.rows[ri]
+            full_name = self._compose_file_name(name_state["get_base"](DEFAULT_NEW_FILE_BASENAME), name_state["get_ext"](), fallback_base=DEFAULT_NEW_FILE_BASENAME)
+            update_fields = {
                 "代码/说明": type_var.get(),
                 "相应代码和说明文件": full_name,
                 "代码子文件夹": self._save_code_subdir(sub_field["var"].get()),
                 "保存在资料中的名称": new_src,
-                "运行顺序": order_field["get"](),
                 "备注": note_var.get(),
-            })
+            }
+            # 只有代码类型才设置运行顺序
+            if type_var.get() == "代码" and "order_field" in self._detail_state:
+                update_fields["运行顺序"] = self._detail_state["order_field"]["get"]()
+            else:
+                update_fields["运行顺序"] = ""
+            self.model.edit_file(ri, update_fields)
+            self._sort_rows()
+            # 重建 doc_to_codes 映射关系（重要！每次 rows 变化后都要这样做！）
+            self._doc_to_codes = self._build_doc_to_codes_from_rows()
+            current_ri = self._find_row_index(target_row)
+            current_row_id = self._row_id(target_row)
+            # 现在处理用户新选择的绑定
             new_type = type_var.get()
             if new_type == "说明":
-                chosen = set()
-                if dynamic_state["lb"] is not None:
-                    for i in dynamic_state["lb"].curselection():
-                        if 0 <= i < len(dynamic_state["code_ris"]):
-                            chosen.add(dynamic_state["code_ris"][i])
-                allowed = {cri for cri, _ in self._codes_in_same_step(ri)}
-                chosen = {c for c in chosen if c in allowed}
-                self._doc_to_codes[ri] = chosen
+                if current_ri != -1:
+                    allowed = {self._row_id(self.rows[cri]) for cri, _ in self._codes_in_same_step(current_ri)}
+                    chosen = {c for c in chosen if c in allowed}
+                    self._doc_to_codes[current_row_id] = chosen
             else:
-                if ri in self._doc_to_codes:
-                    self._doc_to_codes.pop(ri, None)
+                if current_row_id in self._doc_to_codes:
+                    self._doc_to_codes.pop(current_row_id, None)
             self._recompute_and_write_binding_tokens()
             self.model.rebuild()
             self._mark_dirty("已更新文件详情（未保存）")
+            self._log(f"修改了文件详情：{full_name}")
             self.populate_tree()
-            self._reveal(("file", ri))
+            if current_row_id:
+                self._reveal(("file", current_row_id))
             self._update_undo_buttons()
 
         self._tk_button(pad, "应用修改", apply, primary=True).pack(anchor="w", pady=(8, 0))
+        self._set_detail_apply_action(apply)
+        self._bind_mousewheel_recursive(self.detail)
 
     def _form_folder(self, path):
         self.right_title.config(text="文件夹属性")
@@ -1464,13 +2809,25 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         pad = tk.Frame(self.detail, bg=PALETTE["surface"])
         pad.pack(fill="both", expand=True, padx=20, pady=16)
         is_top = len(path) == 1
-        name_var = self._field(
-            pad,
-            "文件夹名称",
-            path[-1] if path else "",
-            "改名后会自动同步到该文件夹下所有文件行。",
-            state_key="folder_name_var",
-        )
+        current_folder_name = self._display_path_name(path[-1]) if path else ""
+        if is_top:
+            name_var = self._field(
+                pad,
+                "文件夹名称",
+                current_folder_name,
+                "改名后会自动同步到该文件夹下所有文件行。",
+                state_key="folder_name_var",
+            )
+        else:
+            folder_numbers, folder_stem = self._split_numbered_name(current_folder_name, count=1)
+            name_var = self._numbered_name_field(
+                pad,
+                "文件夹名称",
+                [folder_numbers[0] if folder_numbers else ""],
+                folder_stem or current_folder_name,
+                "格式：数字_名称。数字可选 0-9，也可留空；留空时不带前缀。",
+                placeholder="新文件夹",
+            )
         step_var = None
         if is_top:
             step_var = self._number_choice_field(
@@ -1479,9 +2836,10 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 (node or {}).get("step", ""),
                 self._collect_step_usage(path),
                 STEP_LIMIT,
-                "步骤编号最多 20 个；下拉会优先定位到当前可用编号。",
+                "可选 （空白）、0-20；0 也是合法步骤编号。",
                 empty_hint="当前步骤编号空闲。",
                 state_key="folder_step_var",
+                allow_blank=True,
             )
 
         def apply():
@@ -1489,18 +2847,28 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             self._push_undo()
             if step_var is not None:
                 self.model.set_top_step(old_path, step_var["get"]())
-            new_name = name_var.get().strip()
+            new_name = name_var.get().strip() if is_top else name_var["get_base"]("新文件夹")
             new_path = old_path
-            if new_name and new_name != old_path[-1]:
+            if new_name and new_name != self._display_path_name(old_path[-1]):
                 # set_top_step 已 rebuild，路径名未变，可继续按原名 rename
                 self.model.rename_folder(old_path, new_name)
-                new_path = old_path[:-1] + (new_name,)
+                if len(old_path) == 1 and self.model and self.model._is_top_key(old_path[0]):
+                    new_path = (self.model._make_top_key(step_var["get"]() if step_var is not None else self.model._path_step(old_path), new_name),)
+                else:
+                    new_path = old_path[:-1] + (new_name,)
+            self._sort_rows()
+            self._doc_to_codes = self._build_doc_to_codes_from_rows()
+            self._recompute_and_write_binding_tokens()
+            self.model.rebuild()
             self._mark_dirty("已更新文件夹（未保存）")
+            self._log(f"修改了文件夹属性：{'/'.join(self._display_path(new_path))}")
             self.populate_tree()
             self._reveal(("folder", new_path))
             self._update_undo_buttons()
 
         self._tk_button(pad, "应用修改", apply, primary=True).pack(anchor="w", pady=(8, 0))
+        self._set_detail_apply_action(apply)
+        self._bind_mousewheel_recursive(self.detail)
 
     def _form_output(self, ri):
         self.right_title.config(text="输出目标")
@@ -1511,7 +2879,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             pad,
             "输出标记（输出文件）",
             OUTPUT_MARKER_OPTIONS,
-            f["输出文件"] or "ins",
+            f["输出文件"] or "全量",
             "只允许选择：全量 或 ins。",
             state_key="output_marker_var",
         )
@@ -1534,12 +2902,22 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         def apply():
             self._push_undo()
             self.model.edit_file(ri, {"输出文件": marker_field["var"].get(), "对应代码": code_var.get()})
+            target_row = self.rows[ri]
+            self._sort_rows()
+            self._doc_to_codes = self._build_doc_to_codes_from_rows()
+            self._recompute_and_write_binding_tokens()
+            self.model.rebuild()
             self._mark_dirty("已更新输出目标（未保存）")
+            self._log(f"修改了输出项属性：{marker_field['var'].get()}")
             self.populate_tree()
-            self._reveal(("output", ri))
+            current_row_id = self._row_id(target_row)
+            if current_row_id:
+                self._reveal(("output", current_row_id))
             self._update_undo_buttons()
 
         self._tk_button(pad, "应用修改", apply, primary=True).pack(anchor="w", pady=(8, 0))
+        self._set_detail_apply_action(apply)
+        self._bind_mousewheel_recursive(self.detail)
 
     # ---------- 增删 ----------
     def _selected_folder_path(self):
@@ -1549,84 +2927,250 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         if kind == "folder":
             return tuple(key)
         if kind in ("file", "output"):
-            return tuple(self.model._segments(self.rows[key]))
+            row = self._find_row_by_id(key)
+            return tuple(self.model._path_keys(row)) if row is not None else ()
         return ()
+
+    def _selected_parent_folder_for_paste(self):
+        if not self._selected:
+            return ()
+        kind, key = self._selected
+        if kind == "folder":
+            return tuple(key)
+        if kind in ("file", "output"):
+            row = self._find_row_by_id(key)
+            return tuple(self.model._path_keys(row)) if row is not None else ()
+        return ()
+
+    def _can_paste_to(self, clip_kind, source_key, target_folder_path):
+        target_folder_path = tuple(target_folder_path)
+        if clip_kind == "output":
+            if not target_folder_path or self._display_path_name(target_folder_path[-1]) != "输出文件":
+                raise ValueError("输出项只能粘贴到『输出文件』文件夹下。")
+            return
+        if target_folder_path and self._display_path_name(target_folder_path[-1]) == "输出文件":
+            raise ValueError("普通文件或文件夹不能粘贴到『输出文件』文件夹下。")
+        if clip_kind == "folder":
+            source_path = tuple(source_key)
+            if target_folder_path[:len(source_path)] == source_path:
+                raise ValueError("不能把文件夹粘贴到它自己或其子文件夹中。")
+            if len(target_folder_path) + 1 > 5:
+                raise ValueError("目标层级过深，最多支持 5 层文件夹路径。")
+        elif len(target_folder_path) > 5:
+            raise ValueError("目标层级过深，最多支持 5 层文件夹路径。")
+
+    def on_cut(self):
+        if not self._selected:
+            self.status_var.set("请先选中要剪切的文件、输出项或文件夹。")
+            return
+        kind, key = self._selected
+        if kind not in ("file", "output", "folder"):
+            self.status_var.set("当前选中项不支持剪切。")
+            return
+        self._clipboard = {"kind": kind, "key": key}
+        kind_name = {"file": "文件", "output": "输出项", "folder": "文件夹"}[kind]
+        self.status_var.set(f"已剪切{kind_name}，请选择目标文件夹后点击“粘贴”。")
+
+    def on_paste(self):
+        if not self._clipboard:
+            self.status_var.set("剪贴板为空，请先剪切一个文件、输出项或文件夹。")
+            return
+        target_folder_path = self._selected_parent_folder_for_paste()
+        clip_kind = self._clipboard["kind"]
+        clip_key = self._clipboard["key"]
+        try:
+            self._can_paste_to(clip_kind, clip_key, target_folder_path)
+        except Exception as exc:
+            if messagebox:
+                messagebox.showerror("无法粘贴", str(exc), parent=self)
+            else:
+                self.status_var.set(str(exc))
+            return
+
+        self._push_undo()
+        reveal_meta = None
+        if clip_kind in ("file", "output"):
+            clip_ri = self._find_row_index_by_id(clip_key)
+            if clip_ri == -1:
+                self.status_var.set("原始条目已不存在，请重新剪切。")
+                self._clipboard = None
+                return
+            target_row = self.rows[clip_ri]
+            self.model.move_file(clip_ri, target_folder_path)
+            self._sort_rows()
+            self._doc_to_codes = self._build_doc_to_codes_from_rows()
+            self._recompute_and_write_binding_tokens()
+            self.model.rebuild()
+            current_row_id = self._row_id(target_row)
+            if current_row_id:
+                reveal_meta = (clip_kind, current_row_id)
+        else:
+            source_path = tuple(clip_key)
+            new_path = self.model.move_folder(source_path, target_folder_path)
+            self._sort_rows()
+            self._doc_to_codes = self._build_doc_to_codes_from_rows()
+            self._recompute_and_write_binding_tokens()
+            self.model.rebuild()
+            reveal_meta = ("folder", new_path)
+
+        self._clipboard = None
+        self._mark_dirty("已剪切粘贴（未保存）")
+        moved_display = "/".join(self._display_path(clip_key)) if clip_kind == "folder" else str(clip_key)
+        target_display = "/".join(self._display_path(target_folder_path)) if target_folder_path else "根目录"
+        self._log(f"执行粘贴操作：将 {moved_display} 移动到 {target_display}")
+        self.populate_tree()
+        if reveal_meta is not None:
+            self._reveal(reveal_meta)
+        self._update_undo_buttons()
+        self.status_var.set("已完成粘贴，请检查位置后保存。")
 
     def on_add_file(self):
         path = self._selected_folder_path()
-        default_name = f"{UNNAMED_PLACEHOLDER}.docx"
+        default_name = f"0_{DEFAULT_NEW_FILE_BASENAME}.docx"
         default_type = "说明"
         if self._selected and self._selected[0] == "file":
-            selected_row = self.rows[self._selected[1]]
-            selected_type = self.model.cell(selected_row, "代码/说明")
-            if selected_type == "代码":
-                default_name = f"{UNNAMED_PLACEHOLDER}.py"
-                default_type = "代码"
+            selected_row = self._find_row_by_id(self._selected[1])
+            if selected_row is not None:
+                selected_type = self.model.cell(selected_row, "代码/说明")
+                if selected_type == "代码":
+                    default_name = f"1_{DEFAULT_NEW_FILE_BASENAME}.py"
+                    default_type = "代码"
         self._push_undo()
         ri = self.model.add_file(path, default_name, default_type)
+        target_row = self.rows[ri]
+        self._sort_rows()
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
+        self.model.rebuild()
         if self._open_paths is not None:
             self._open_paths |= {tuple(path[:i + 1]) for i in range(len(path))}  # 展开到父文件夹
         self._mark_dirty("已新增文件（未保存）")
+        self._log(f"执行新增文件：在 {'/'.join(self._display_path(path)) if path else '根目录'} 新增了文件")
         self.populate_tree()
-        self._reveal(("file", ri))   # 选中并滚动到新文件，避免“消失”
+        current_row_id = self._row_id(target_row)
+        if current_row_id:
+            self._reveal(("file", current_row_id))
         self._update_undo_buttons()
         self.status_var.set("已新增文件，已为你定位到它，请在右侧填写名称与扩展名。")
 
     def on_add_step_folder(self):
         self._push_undo()
-        path = self.model.add_folder((), "步骤")
+        temp_path, _ = self.model.add_folder((), "步骤")
+        self._sort_rows()
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
+        self.model.rebuild()
+        step_value = str(self._next_available_number(self._collect_step_usage(), STEP_LIMIT))
+        self.model.set_top_step(temp_path, step_value)
+        path = (self.model._make_top_key(step_value, "步骤"),)
+        self._sort_rows()
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
+        self.model.rebuild()
         if self._open_paths is not None:
             self._open_paths |= {tuple(path[:i + 1]) for i in range(len(path))}
         self._mark_dirty("已新增步骤文件夹（未保存）")
         self.populate_tree()
         self._reveal(("folder", path))
         self._update_undo_buttons()
-        self.status_var.set("已新增『步骤』，请在右侧填写名称和步骤编号。")
+        self.status_var.set("已新增『步骤』文件夹；文件夹行与文件行已分离，请按需再新增文件。")
 
     def on_add_output_folder(self):
         parent = self._selected_folder_path()
         self._push_undo()
-        folder_path = self.model.add_folder(parent, "输出文件")
-        self.model.add_output(folder_path, marker="ins", code="")
+        folder_path = parent + ("输出文件",)
+        self.model.add_folder(parent, "输出文件")
+        self.model.add_output(folder_path, marker="全量", code="")
+        self._sort_rows()
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
+        self.model.rebuild()
         if self._open_paths is not None:
             self._open_paths |= {tuple(folder_path[:i + 1]) for i in range(len(folder_path))}
         self._mark_dirty("已新增输出文件夹（未保存）")
         self.populate_tree()
         self._reveal(("folder", folder_path))
         self._update_undo_buttons()
-        self.status_var.set("已新增『输出文件』，输出项已一并创建。")
+        self.status_var.set("已新增『输出文件』文件夹，并在另一行新增了输出项。")
 
     def on_add_folder(self):
         path = self._selected_folder_path()
         self._push_undo()
-        new_path = self.model.add_folder(path, "新文件夹")
+        new_path, _ = self.model.add_folder(path, "新文件夹")
+        self._sort_rows()
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
+        self.model.rebuild()
         if self._open_paths is not None:
             self._open_paths |= {tuple(path[:i + 1]) for i in range(len(path))}
+            self._open_paths |= {tuple(new_path[:i + 1]) for i in range(len(new_path))}
         self._mark_dirty("已新增文件夹（未保存）")
+        self._log(f"执行新增文件夹：在 {'/'.join(self._display_path(path)) if path else '根目录'} 新增了文件夹")
         self.populate_tree()
         self._reveal(("folder", new_path))
         self._update_undo_buttons()
-        self.status_var.set("已新增『新文件夹』，已为你定位到它。")
+        self.status_var.set("已新增『新文件夹』；文件夹行与文件行已分离，请按需再新增文件。")
 
     def on_delete(self):
-        if not self._selected:
+        selected_metas = list(self._selected_batch) if self._selected_batch else ([self._selected] if self._selected else [])
+        selected_metas = [meta for meta in selected_metas if meta]
+        if not selected_metas:
             return
-        kind, key = self._selected
-        if kind == "file" or kind == "output":
-            if messagebox and not messagebox.askokcancel("确认删除", "删除此文件 / 条目？", parent=self):
+        if len(selected_metas) == 1:
+            kind, key = selected_metas[0]
+            if kind == "file" or kind == "output":
+                if messagebox and not messagebox.askokcancel("确认删除", "删除此文件 / 条目？", parent=self):
+                    return
+            elif kind == "folder":
+                if messagebox and not messagebox.askokcancel(
+                        "确认删除", "删除此文件夹及其下所有文件？", parent=self):
+                    return
+            else:
                 return
-            self._push_undo()
-            self.model.delete_file(key)
-        elif kind == "folder":
-            if messagebox and not messagebox.askokcancel(
-                    "确认删除", "删除此文件夹及其下所有文件？", parent=self):
-                return
-            self._push_undo()
-            self.model.delete_folder(key)
         else:
-            return
+            if messagebox and not messagebox.askokcancel(
+                    "确认删除", f"删除当前选中的 {len(selected_metas)} 项？", parent=self):
+                return
+
+        folder_paths = []
+        row_ids = []
+        for kind, key in selected_metas:
+            if kind == "folder":
+                folder_paths.append(tuple(key))
+            elif kind in ("file", "output"):
+                row_ids.append(key)
+
+        covered_row_ids = set()
+        for row in self.rows:
+            segs = tuple(self.model._path_keys(row))
+            if any(segs[:len(path)] == path for path in folder_paths):
+                rid = self._row_id(row)
+                if rid:
+                    covered_row_ids.add(rid)
+        row_ids = [rid for rid in row_ids if rid not in covered_row_ids]
+
+        self._push_undo()
+        for path in sorted(set(folder_paths), key=lambda p: len(p), reverse=True):
+            self.model.delete_folder(path)
+        for row_id in row_ids:
+            delete_ri = self._find_row_index_by_id(row_id)
+            if delete_ri != -1:
+                self.model.delete_file(delete_ri)
+        self._sort_rows()
+        self._doc_to_codes = self._build_doc_to_codes_from_rows()
+        self._recompute_and_write_binding_tokens()
+        self.model.rebuild()
         self._selected = None
+        self._selected_batch = []
         self._mark_dirty("已删除（未保存）")
+        
+        log_msgs = []
+        if folder_paths:
+            log_msgs.append(f"删除了 {len(folder_paths)} 个文件夹")
+        if row_ids:
+            log_msgs.append(f"删除了 {len(row_ids)} 个文件/输出项")
+        self._log("执行删除操作：" + "，".join(log_msgs))
+        
         self.populate_tree()
         self._update_undo_buttons()
 
@@ -1637,7 +3181,15 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
 
     def save(self):
         try:
-            self._validate_before_save()
+            if self.model:
+                self.model.ensure_row_ids()
+            path_warnings = self._validate_before_save()
+            if path_warnings and messagebox:
+                msg = "检测到以下文件保存位置可能不当：\n- " + "\n- ".join(path_warnings) + "\n\n是否忽略警告并强制写回？"
+                if not messagebox.askyesno("保存警告", msg, parent=self):
+                    self._log("保存已取消：用户拒绝忽略路径警告")
+                    return
+                    
             self._recompute_and_write_binding_tokens()
             if self.model:
                 self.model.rebuild()
@@ -1645,9 +3197,11 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         except Exception as exc:
             if messagebox:
                 messagebox.showerror("保存失败", str(exc), parent=self)
+            self._log(f"保存失败: {str(exc)}")
             return
         self.dirty = False
         self.status_var.set(f"保存成功，已写回 {self.blueprint_xlsx_path}")
+        self._log(f"保存成功，已将更新写入 Excel，物理行原位更新，新行已追加至末尾。")
         if callable(self.on_saved):
             try:
                 self.on_saved(self.blueprint_xlsx_path)

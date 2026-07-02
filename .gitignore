@@ -26,6 +26,7 @@ _log/
 *.env
 *.pid
 *.zip
+*.json
 
 # Docs
 DB_README.md

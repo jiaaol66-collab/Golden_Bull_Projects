@@ -1007,10 +1007,19 @@ class WorkspaceUIMixin:
         if not tab_data:
             return
         manifest = tab_data.get("manifest", {})
+        ordered_steps = self.get_manifest_steps_in_order(manifest)
+        runnable_step_ids = {
+            step.get("order")
+            for step in ordered_steps
+            if step.get("order") is not None and step.get("runnable", True)
+        }
 
         def toggle_all(val):
-            for var in tab_data["step_vars"].values():
-                var.set(val)
+            for step_id, var in tab_data["step_vars"].items():
+                if step_id in runnable_step_ids:
+                    var.set(val)
+                elif val == "0":
+                    var.set("0")
 
         layout_row = ctk.CTkFrame(parent, fg_color="transparent")
         layout_row.pack(fill="x", expand=False, anchor="n", pady=(2, 0))
@@ -1124,7 +1133,6 @@ class WorkspaceUIMixin:
         timer_label.pack(side="right")
         tab_data["run_timer_label"] = timer_label
         self.refresh_run_timer_label(tab_id)
-        ordered_steps = self.get_manifest_steps_in_order(manifest)
         if ordered_steps:
             tab_data["_step_manifest_retrying"] = False
         elif tab_data.get("bp_path") and not tab_data.get("_step_manifest_retrying"):
@@ -1144,10 +1152,14 @@ class WorkspaceUIMixin:
 
         for step in ordered_steps:
             step_id = step["order"]
-            default_value = "1" if step.get("exists") else "0"
+            is_runnable = bool(step.get("runnable", True))
+            default_value = "1" if step.get("exists") and is_runnable else "0"
             if step_id not in prev_values and tab_data.get("saved_step_selection_loaded"):
-                default_value = "1" if step_id in set(tab_data.get("saved_step_selection_orders", [])) else "0"
-            var = ctk.StringVar(value=prev_values.get(step_id, default_value))
+                default_value = "1" if (is_runnable and step_id in set(tab_data.get("saved_step_selection_orders", []))) else "0"
+            initial_value = prev_values.get(step_id, default_value)
+            if not is_runnable:
+                initial_value = "0"
+            var = ctk.StringVar(value=initial_value)
             var.trace_add("write", lambda *_args, tid=tab_id: self.on_step_selection_changed(tid))
             tab_data["step_vars"][step_id] = var
 
@@ -1162,7 +1174,9 @@ class WorkspaceUIMixin:
 
             display_label = step.get("display_label", step["script_name"])
             text = display_label if step.get("exists") else f"[缺失] {display_label}"
-            state = "normal" if step.get("exists") else "disabled"
+            if not is_runnable:
+                text = f"{text} [仅打开]"
+            state = "normal" if step.get("exists") and is_runnable else "disabled"
 
             row = ctk.CTkFrame(step_scroll, fg_color="transparent")
             row.pack(fill="x", padx=10, pady=5)

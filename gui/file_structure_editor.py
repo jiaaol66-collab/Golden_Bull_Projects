@@ -120,6 +120,7 @@ class FileStructureEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self.table_loaded = False
         self.rendering = False
         self.render_job = None
+        self._after_handles = set()
         self.last_scrolled_row_index = None
         self._global_scroll_bound = False
         # O(1) 高亮追踪：只重绘"上一行 + 当前行"，不再每次遍历整表
@@ -137,7 +138,7 @@ class FileStructureEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self.resizable(True, True)
         self.protocol("WM_DELETE_WINDOW", self.on_window_close)
         try:
-            self.after(0, lambda: self.state("zoomed"))
+            self._track_after(self.after(0, lambda: self.state("zoomed")))
         except Exception:
             pass
 
@@ -145,8 +146,21 @@ class FileStructureEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self._install_global_scroll_bindings()
         self.show_empty_state("正在准备表格...")
         self._bring_to_front()
-        self.after(80, self.load_table_on_demand)
-        self.after(1600, lambda: self.attributes("-topmost", False))
+        self._track_after(self.after(80, self.load_table_on_demand))
+        self._track_after(self.after(1600, lambda: self.attributes("-topmost", False)))
+
+    def _track_after(self, handle):
+        if handle:
+            self._after_handles.add(handle)
+        return handle
+
+    def _cancel_tracked_after_jobs(self):
+        for handle in list(self._after_handles):
+            try:
+                self.after_cancel(handle)
+            except Exception:
+                pass
+        self._after_handles.clear()
 
     def build_layout(self):
         header = ctk.CTkFrame(self, **outer_panel_style())
@@ -590,7 +604,7 @@ class FileStructureEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self._update_scrollregions()
         if end_index < total:
             self.status_var.set(f"正在加载当前工作区表格... {end_index}/{total}")
-            self.render_job = self.after(10, lambda idx=end_index: self._render_rows_chunk(idx))
+            self.render_job = self._track_after(self.after(10, lambda idx=end_index: self._render_rows_chunk(idx)))
             return
         self.rendering = False
         self._refresh_row_highlight()
@@ -599,7 +613,7 @@ class FileStructureEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self._bring_to_front()
         current_row = self.current_cell_focus.get("row_index")
         if current_row is not None:
-            self.after(30, lambda idx=current_row: self.scroll_row_into_view(idx))
+            self._track_after(self.after(30, lambda idx=current_row: self.scroll_row_into_view(idx)))
 
     def _create_row_widgets(self, row_index, values):
         drag_enabled = row_index != 0
@@ -1331,7 +1345,7 @@ class FileStructureEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         self.current_cell_focus = {"row_index": row_index, "col_index": 0}
         self.last_scrolled_row_index = None
         self._refresh_row_highlight()
-        self.after(30, lambda idx=row_index: self.scroll_row_into_view(idx))
+        self._track_after(self.after(30, lambda idx=row_index: self.scroll_row_into_view(idx)))
         self.status_var.set(f"已定位到 {self.award_name} 区块首行（第 {row_index + 1} 行）。")
 
     def on_window_close(self):
@@ -1339,4 +1353,5 @@ class FileStructureEditorWindow(ctk.CTkToplevel if ctk is not None else object):
             confirmed = messagebox.askokcancel("确认关闭", "当前有未保存修改，确认直接关闭吗？", parent=self)
             if not confirmed:
                 return
+        self._cancel_tracked_after_jobs()
         self.destroy()

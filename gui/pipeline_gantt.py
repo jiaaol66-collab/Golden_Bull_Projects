@@ -55,6 +55,7 @@ class PipelineGanttMixin:
         workspace_root = manifest.get("workspace_root", "")
         if not workspace_root:
             return ""
+        workspace_root = os.path.abspath(workspace_root)
         log_path = os.path.join(workspace_root, "参评信息", "时间记录.log")
         legacy_path = os.path.join(workspace_root, "参评信息", "时间记录.txt")
         if os.path.isfile(log_path):
@@ -67,6 +68,7 @@ class PipelineGanttMixin:
         workspace_root = manifest.get("workspace_root", "")
         if not workspace_root:
             return ""
+        workspace_root = os.path.abspath(workspace_root)
         return os.path.join(workspace_root, "参评信息", "时间记录.txt")
 
     def get_workspace_meta_path(self, manifest):
@@ -369,13 +371,66 @@ class PipelineGanttMixin:
         except (TypeError, ValueError):
             timer_seconds = 0.0
         title = attempt_name or stamp_text
-        return f"{title} | {self.get_attempt_status_label(summary.get('status'))} | {self.format_elapsed_time(timer_seconds)}"
+        prefix = "未归档 | " if summary.get("is_unarchived") else ""
+        return f"{prefix}{title} | {self.get_attempt_status_label(summary.get('status'))} | {self.format_elapsed_time(timer_seconds)}"
+
+    def build_unarchived_attempt_summary(self, session_id, entries):
+        session_id = _clean_text(session_id)
+        filtered_entries = [item for item in entries if _clean_text(item.get("session_id")) == session_id]
+        if not session_id or not filtered_entries:
+            return {}
+
+        valid_starts = [item.get("start_at") for item in filtered_entries if item.get("start_at")]
+        valid_ends = [self.get_timeline_entry_end(item, datetime.datetime.now()) for item in filtered_entries]
+        started_at = min(valid_starts) if valid_starts else None
+        ended_at = max(valid_ends) if valid_ends else started_at
+        timer_seconds = 0.0
+        if started_at and ended_at:
+            timer_seconds = max(0.0, (ended_at - started_at).total_seconds())
+
+        statuses = {_clean_text(item.get("status")).lower() for item in filtered_entries}
+        if "running" in statuses:
+            status = "running"
+        elif "failed" in statuses or "error" in statuses or "unfinished" in statuses:
+            status = "failed"
+        else:
+            status = "success"
+
+        return {
+            "session_id": session_id,
+            "attempt_name": "",
+            "started_at": started_at.isoformat(sep=" ", timespec="seconds") if started_at else "",
+            "ended_at": ended_at.isoformat(sep=" ", timespec="seconds") if ended_at else "",
+            "main_timer_seconds": timer_seconds,
+            "status": status,
+            "status_label": self.get_attempt_status_label(status),
+            "is_unarchived": True,
+            "entries": filtered_entries,
+        }
+
+    def build_unarchived_attempt_summaries(self, tab_id, manifest, archived_session_ids=None):
+        archived_session_ids = set(archived_session_ids or [])
+        entries = self.get_time_record_entries(tab_id, session_id="", max_items=None, include_all_sessions=True)
+        if not entries:
+            return []
+        session_entries = [item for item in entries if _clean_text(item.get("session_id"))]
+        if not session_entries:
+            return []
+        session_ids = []
+        seen = set()
+        for item in sorted(session_entries, key=lambda entry: entry.get("sort_at") or datetime.datetime.min, reverse=True):
+            session_id = _clean_text(item.get("session_id"))
+            if not session_id or session_id in archived_session_ids or session_id in seen:
+                continue
+            seen.add(session_id)
+            session_ids.append(session_id)
+        return [summary for summary in (self.build_unarchived_attempt_summary(session_id, session_entries) for session_id in session_ids) if summary]
 
     def get_attempt_selector_state(self, tab_id, manifest):
         tab_data = self.active_tabs_data.get(tab_id)
         summaries = self.load_attempt_index(manifest)
-        display_map = {}
-        values = []
+        archived_display_map = {}
+        archived_values = []
         used = set()
         for summary in summaries:
             session_id = _clean_text(summary.get("session_id"))
@@ -385,22 +440,67 @@ class PipelineGanttMixin:
             if label in used:
                 label = f"{label} | {session_id[-4:]}"
             used.add(label)
-            values.append(label)
-            display_map[label] = session_id
+            archived_values.append(label)
+            archived_display_map[label] = session_id
 
+        archived_session_ids = {session_id for session_id in archived_display_map.values()}
+        unarchived_summaries = self.build_unarchived_attempt_summaries(tab_id, manifest, archived_session_ids)
+        unarchived_display_map = {}
+        unarchived_values = []
+        for summary in unarchived_summaries:
+            label = self.build_attempt_display_label(summary)
+            if label in used:
+                label = f"{label} | {_clean_text(summary.get('session_id'))[-4:]}"
+            used.add(label)
+            unarchived_values.append(label)
+            unarchived_display_map[label] = _clean_text(summary.get("session_id"))
+
+        selector_scope = _clean_text((tab_data or {}).get("attempt_selector_scope")).lower()
+        if selector_scope not in {"archived", "unarchived"}:
+            selector_scope = "archived" if archived_values else ("unarchived" if unarchived_values else "archived")
+        if selector_scope == "archived" and not archived_values and unarchived_values:
+            selector_scope = "unarchived"
+        elif selector_scope == "unarchived" and not unarchived_values and archived_values:
+            selector_scope = "archived"
+
+        display_map = archived_display_map if selector_scope == "archived" else unarchived_display_map
+        values = archived_values if selector_scope == "archived" else unarchived_values
         selected_session_id = _clean_text((tab_data or {}).get("attempt_selected_session_id"))
         available_sessions = {session_id for session_id in display_map.values()}
         current_session_id = _clean_text((tab_data or {}).get("timeline_batch_session_id"))
-        if current_session_id and current_session_id in available_sessions and not selected_session_id:
-            selected_session_id = current_session_id
+        latest_archived_session_id = _clean_text(summaries[0].get("session_id")) if summaries else ""
+        latest_unarchived_session_id = _clean_text(unarchived_summaries[0].get("session_id")) if unarchived_summaries else ""
+        manual_selection = bool((tab_data or {}).get("attempt_manual_selection"))
         if selected_session_id not in available_sessions:
-            selected_session_id = next(iter(display_map.values()), "")
+            selected_session_id = ""
+            manual_selection = False
+        if not manual_selection:
+            if selector_scope == "archived":
+                if latest_archived_session_id and latest_archived_session_id in available_sessions:
+                    selected_session_id = latest_archived_session_id
+            else:
+                if current_session_id and current_session_id in available_sessions:
+                    selected_session_id = current_session_id
+                elif latest_unarchived_session_id and latest_unarchived_session_id in available_sessions:
+                    selected_session_id = latest_unarchived_session_id
+            if not selected_session_id:
+                selected_session_id = next(iter(display_map.values()), "")
         selected_label = next((label for label, session_id in display_map.items() if session_id == selected_session_id), "")
         if tab_data is not None:
             tab_data["attempt_display_map"] = display_map
+            tab_data["attempt_archived_display_map"] = archived_display_map
+            tab_data["attempt_archived_values"] = archived_values
+            tab_data["attempt_unarchived_display_map"] = unarchived_display_map
+            tab_data["attempt_unarchived_values"] = unarchived_values
+            tab_data["unarchived_attempt_summaries"] = unarchived_summaries
+            tab_data["unarchived_attempt_summary_map"] = {
+                _clean_text(summary.get("session_id")): summary for summary in unarchived_summaries if _clean_text(summary.get("session_id"))
+            }
+            tab_data["attempt_selector_scope"] = selector_scope
+            tab_data["attempt_manual_selection"] = manual_selection
             if selected_session_id:
                 tab_data["attempt_selected_session_id"] = selected_session_id
-        return summaries, display_map, values, selected_session_id, selected_label
+        return summaries, selector_scope, values, selected_session_id, selected_label
 
     def parse_time_record_datetime(self, text):
         stamp_text = _clean_text(text)
@@ -592,7 +692,7 @@ class PipelineGanttMixin:
         entries.sort(key=lambda item: item.get("sort_at") or datetime.datetime.min)
         return entries[-60:]
 
-    def parse_structured_time_record_entries(self, tab_id, code_index, time_record_path, session_id="", max_items=None, reference_now=None):
+    def parse_structured_time_record_entries(self, tab_id, code_index, time_record_path, session_id="", max_items=None, reference_now=None, include_all_sessions=False):
         pending = {}
         entries = []
         timeline_prefix = "GB_TIMELINE "
@@ -686,7 +786,7 @@ class PipelineGanttMixin:
         session_id = _clean_text(session_id)
         if session_id:
             entries = [item for item in entries if _clean_text(item.get("session_id")) == session_id]
-        else:
+        elif not include_all_sessions:
             session_entries = [item for item in entries if item.get("session_id")]
             if session_entries:
                 latest_session_id = max(session_entries, key=lambda item: item.get("sort_at") or datetime.datetime.min).get("session_id")
@@ -695,7 +795,7 @@ class PipelineGanttMixin:
             return entries[-max_items:]
         return entries
 
-    def get_time_record_entries(self, tab_id, session_id="", time_record_path="", max_items=60, reference_now=None):
+    def get_time_record_entries(self, tab_id, session_id="", time_record_path="", max_items=60, reference_now=None, include_all_sessions=False):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
             return []
@@ -711,6 +811,7 @@ class PipelineGanttMixin:
                 session_id=session_id,
                 max_items=max_items,
                 reference_now=reference_now,
+                include_all_sessions=include_all_sessions,
             )
             if entries:
                 return entries
@@ -986,7 +1087,7 @@ class PipelineGanttMixin:
         )
         self.bind_timeline_item_open(canvas, tag, workspace_root, entry)
 
-    def render_timeline_swimlane(self, parent, tab_id, entries, manifest, is_running=False):
+    def render_timeline_swimlane(self, parent, tab_id, entries, manifest, is_running=False, fallback_log_path="", compact_only=False):
         workspace_root = manifest.get("workspace_root", "")
         main_entries, async_lanes = self.build_timeline_lane_groups(entries)
         async_lane_count = max(1, len(async_lanes))
@@ -1007,6 +1108,8 @@ class PipelineGanttMixin:
         total_seconds = max(1, int((max_end - min_start).total_seconds()))
         scale_config = self.get_timeline_scale_config(total_seconds, is_running)
         body_height = scale_config["body_height"]
+        if not is_running and len(entries) <= 2 and total_seconds <= 10:
+            body_height = min(body_height, 132)
         total_height = TIMELINE_HEADER_HEIGHT + body_height
 
         lane_layout = [
@@ -1040,40 +1143,41 @@ class PipelineGanttMixin:
                 }
             )
 
-        swimlane_card = ctk.CTkFrame(parent, **panel_card_style())
-        swimlane_card.pack(fill="x", padx=10, pady=(0, 10))
-        card_head = ctk.CTkFrame(swimlane_card, fg_color="transparent")
-        card_head.pack(fill="x", padx=10, pady=(10, 6))
-        ctk.CTkLabel(card_head, text="纵向泳道图", text_color=TEXT_PRIMARY, font=ui_font(14, "bold")).pack(side="left")
-        ctk.CTkLabel(
-            card_head,
-            text=f"主轴 1 列 | 异步/工具 {len(async_lanes)} 列 | 刻度 {scale_config['tick_seconds']}s | 点击色块可打开代码文件",
-            text_color=TEXT_MUTED,
-        ).pack(side="right")
+        if not compact_only:
+            swimlane_card = ctk.CTkFrame(parent, **panel_card_style())
+            swimlane_card.pack(fill="x", padx=10, pady=(0, 10))
+            card_head = ctk.CTkFrame(swimlane_card, fg_color="transparent")
+            card_head.pack(fill="x", padx=10, pady=(10, 6))
+            ctk.CTkLabel(card_head, text="纵向泳道图", text_color=TEXT_PRIMARY, font=ui_font(14, "bold")).pack(side="left")
+            ctk.CTkLabel(
+                card_head,
+                text=f"主轴 1 列 | 异步/工具 {len(async_lanes)} 列 | 刻度 {scale_config['tick_seconds']}s | 点击色块可打开代码文件",
+                text_color=TEXT_MUTED,
+            ).pack(side="right")
 
-        canvas = tk.Canvas(
-            swimlane_card,
-            height=total_height,
-            bg=SURFACE_BG,
-            highlightthickness=0,
-            bd=0,
-            relief="flat",
-        )
-        canvas.pack(fill="x", padx=10, pady=(0, 10))
-        canvas.configure(width=total_width)
+            canvas = tk.Canvas(
+                swimlane_card,
+                height=total_height,
+                bg=SURFACE_BG,
+                highlightthickness=0,
+                bd=0,
+                relief="flat",
+            )
+            canvas.pack(fill="x", padx=10, pady=(0, 10))
+            canvas.configure(width=total_width)
 
-        self.draw_timeline_lane_backgrounds(canvas, total_width, total_height, lane_layout)
-        self.draw_timeline_grid(canvas, min_start, total_seconds, total_width, body_height, lane_layout, scale_config)
+            self.draw_timeline_lane_backgrounds(canvas, total_width, total_height, lane_layout)
+            self.draw_timeline_grid(canvas, min_start, total_seconds, total_width, body_height, lane_layout, scale_config)
 
-        main_lane = lane_layout[1]
-        for entry in main_entries:
-            self.draw_timeline_entry_block(canvas, main_lane, entry, min_start, workspace_root, scale_config)
+            main_lane = lane_layout[1]
+            for entry in main_entries:
+                self.draw_timeline_entry_block(canvas, main_lane, entry, min_start, workspace_root, scale_config)
 
-        if async_lanes:
-            for lane_index, lane_entries in enumerate(async_lanes, start=2):
-                current_lane = lane_layout[lane_index]
-                for entry in lane_entries:
-                    self.draw_timeline_entry_block(canvas, current_lane, entry, min_start, workspace_root, scale_config)
+            if async_lanes:
+                for lane_index, lane_entries in enumerate(async_lanes, start=2):
+                    current_lane = lane_layout[lane_index]
+                    for entry in lane_entries:
+                        self.draw_timeline_entry_block(canvas, current_lane, entry, min_start, workspace_root, scale_config)
 
         detail_card = ctk.CTkFrame(parent, **panel_card_style())
         detail_card.pack(fill="x", padx=10, pady=(0, 10))
@@ -1084,9 +1188,14 @@ class PipelineGanttMixin:
             text_color=TEXT_PRIMARY,
             font=ui_font(14, "bold"),
         ).pack(anchor="w", padx=10, pady=(10, 4))
+        detail_hint = "下方记录打开对应日志"
+        if compact_only:
+            detail_hint = "当前为单条短记录，已折叠泳道图；下方记录打开对应日志"
+        else:
+            detail_hint = "上方色块打开代码文件，下方记录打开对应日志"
         ctk.CTkLabel(
             detail_card,
-            text="上方色块打开代码文件，下方记录打开对应日志",
+            text=detail_hint,
             text_color=TEXT_MUTED,
             font=ui_font(11),
         ).pack(anchor="w", padx=10, pady=(0, 6))
@@ -1103,6 +1212,8 @@ class PipelineGanttMixin:
             extra = f" <- {os.path.splitext(os.path.basename(entry['parent_rel']))[0]}" if entry.get("parent_rel") else ""
             summary = f"{axis_label} | {entry.get('label')} | {status_label} | {entry.get('duration_seconds', 0.0):.1f}秒{extra}"
             log_path = self.get_timeline_entry_log_path(manifest, entry)
+            if (not log_path or not os.path.isfile(log_path)) and fallback_log_path and os.path.isfile(fallback_log_path):
+                log_path = fallback_log_path
             if log_path and os.path.isfile(log_path):
                 ctk.CTkButton(
                     detail_card,
@@ -1133,8 +1244,36 @@ class PipelineGanttMixin:
         if not session_id:
             return
         tab_data["attempt_selected_session_id"] = session_id
+        tab_data["attempt_manual_selection"] = True
+        tab_data["gantt_scroll_fraction"] = 0.0
         self.schedule_gui_state_save(tab_id)
         self.render_gantt_tab(tab_id)
+
+    def set_attempt_selector_scope(self, tab_id, scope_label):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        scope = "unarchived" if _clean_text(scope_label) == "未归档" else "archived"
+        if _clean_text(tab_data.get("attempt_selector_scope")) == scope:
+            return
+        tab_data["attempt_selector_scope"] = scope
+        tab_data["attempt_manual_selection"] = False
+        tab_data["gantt_scroll_fraction"] = 0.0
+        self.schedule_gui_state_save(tab_id)
+        self.render_gantt_tab(tab_id)
+
+    def bind_attempt_scope_tab_events(self, tab_id, tabview):
+        segmented = getattr(tabview, "_segmented_button", None)
+        buttons_dict = getattr(segmented, "_buttons_dict", {}) if segmented else {}
+        for tab_name, button_widget in buttons_dict.items():
+            if getattr(button_widget, "_gb_attempt_scope_bound", False):
+                continue
+            button_widget._gb_attempt_scope_bound = True
+            button_widget.bind(
+                "<ButtonRelease-1>",
+                lambda _event, tid=tab_id, name=tab_name, widget=button_widget: widget.after(10, lambda: self.set_attempt_selector_scope(tid, name)),
+                add="+",
+            )
 
     def render_gantt_tab(self, tab_id):
         tab_data = self.active_tabs_data.get(tab_id)
@@ -1154,9 +1293,13 @@ class PipelineGanttMixin:
             widget.destroy()
 
         time_record_path = self.get_time_record_path(manifest)
-        _, _, attempt_values, selected_session_id, selected_label = self.get_attempt_selector_state(tab_id, manifest)
+        _, selector_scope, attempt_values, selected_session_id, selected_label = self.get_attempt_selector_state(tab_id, manifest)
         active_attempt = bool(tab_data.get("attempt_active")) and selected_session_id == _clean_text(tab_data.get("timeline_batch_session_id"))
         selected_summary = self.load_attempt_summary(manifest, selected_session_id)
+        unarchived_summary = (tab_data.get("unarchived_attempt_summary_map") or {}).get(selected_session_id, {})
+        is_unarchived_selected = bool(selected_session_id and unarchived_summary and not selected_summary)
+        if is_unarchived_selected:
+            selected_summary = unarchived_summary
         reference_now = None
         if active_attempt or not selected_session_id:
             entries = self.get_time_record_entries(tab_id, session_id=selected_session_id, max_items=None)
@@ -1165,6 +1308,15 @@ class PipelineGanttMixin:
                 active_timer_seconds = time.monotonic() - tab_data["run_timer_started_at"]
             timer_seconds = active_timer_seconds
             selected_timeline_path = time_record_path
+        elif is_unarchived_selected:
+            selected_timeline_path = time_record_path
+            entries = self.get_time_record_entries(
+                tab_id,
+                session_id=selected_session_id,
+                time_record_path=selected_timeline_path,
+                max_items=None,
+            )
+            timer_seconds = selected_summary.get("main_timer_seconds", 0.0) if selected_summary else 0.0
         else:
             selected_timeline_path = self.get_attempt_timeline_path(manifest, selected_session_id)
             reference_now = self.parse_time_record_datetime((selected_summary or {}).get("ended_at"))
@@ -1185,12 +1337,25 @@ class PipelineGanttMixin:
         title_row.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(title_row, text="步骤流水线", text_color=TEXT_PRIMARY, font=ui_font(18, "bold")).pack(side="left")
         ctk.CTkLabel(title_row, text="本次所选", text_color=TEXT_MUTED, font=ui_font(12)).pack(side="left", padx=(10, 0))
-        attempt_row = ctk.CTkFrame(gantt_header, fg_color="transparent")
-        attempt_row.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(attempt_row, text="尝试", text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(side="left", padx=(0, 8))
+        attempt_switch_row = ctk.CTkFrame(gantt_header, fg_color="transparent")
+        attempt_switch_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(attempt_switch_row, text="范围", text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(side="left", padx=(0, 8))
+        attempt_scope_switch = ctk.CTkSegmentedButton(
+            attempt_switch_row,
+            values=["已归档", "未归档"],
+            command=lambda value, tid=tab_id: self.set_attempt_selector_scope(tid, value),
+            **segmented_button_style(),
+        )
+        attempt_scope_switch.pack(side="left")
+        attempt_scope_switch.set("未归档" if selector_scope == "unarchived" else "已归档")
+
+        attempt_select_row = ctk.CTkFrame(gantt_header, fg_color="transparent")
+        attempt_select_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(attempt_select_row, text="尝试", text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(side="left", padx=(0, 8))
+        empty_text = "暂无未归档记录" if selector_scope == "unarchived" else "暂无已归档记录"
         if attempt_values:
-            ctk.CTkOptionMenu(
-                attempt_row,
+            attempt_menu = ctk.CTkOptionMenu(
+                attempt_select_row,
                 values=attempt_values,
                 width=WIDTH_ATTEMPT_MENU,
                 height=HEIGHT_BUTTON_SM,
@@ -1203,19 +1368,25 @@ class PipelineGanttMixin:
                 dropdown_hover_color=ITEM_HOVER,
                 dropdown_text_color=TEXT_PRIMARY,
                 command=lambda value, tid=tab_id: self.set_selected_attempt(tid, value),
-            ).pack(side="left")
+            )
+            attempt_menu.pack(side="left")
             if selected_label:
-                attempt_menu = attempt_row.winfo_children()[-1]
                 try:
                     attempt_menu.set(selected_label)
                 except Exception:
                     pass
         else:
-            ctk.CTkLabel(attempt_row, text="暂无尝试记录", text_color=TEXT_MUTED).pack(side="left")
-        attempt_dir = self.get_attempt_dir(manifest, selected_session_id) if selected_session_id else self.get_attempts_root(manifest)
+            ctk.CTkLabel(attempt_select_row, text=empty_text, text_color=TEXT_MUTED).pack(side="left")
+        attempt_action_row = ctk.CTkFrame(gantt_header, fg_color="transparent")
+        attempt_action_row.pack(fill="x", pady=(0, 6))
+        attempt_dir = ""
+        if selected_session_id and not is_unarchived_selected:
+            attempt_dir = self.get_attempt_dir(manifest, selected_session_id)
+        elif not selected_session_id:
+            attempt_dir = self.get_attempts_root(manifest)
         if attempt_dir:
             ctk.CTkButton(
-                attempt_row,
+                attempt_action_row,
                 text="打开尝试目录",
                 width=WIDTH_OPEN_INFO_BUTTON,
                 height=HEIGHT_BUTTON_SM,
@@ -1223,9 +1394,9 @@ class PipelineGanttMixin:
                 command=lambda p=attempt_dir: self.open_path(p, ensure_dir=True),
                 **button_secondary_style(),
             ).pack(side="right")
-        if selected_session_id:
+        if selected_session_id and not is_unarchived_selected:
             ctk.CTkButton(
-                attempt_row,
+                attempt_action_row,
                 text="重命名尝试",
                 width=WIDTH_OPEN_INFO_BUTTON,
                 height=HEIGHT_BUTTON_SM,
@@ -1233,7 +1404,7 @@ class PipelineGanttMixin:
                 command=lambda tid=tab_id: self.rename_attempt_display_name(tid),
                 **button_secondary_style(),
             ).pack(side="right", padx=(0, 6))
-        records_summary_path = self.get_attempt_records_summary_path(manifest, selected_session_id) if selected_session_id else ""
+        records_summary_path = self.get_attempt_records_summary_path(manifest, selected_session_id) if (selected_session_id and not is_unarchived_selected) else ""
         ctk.CTkButton(
             title_row,
             text="刷新流水线",
@@ -1256,8 +1427,12 @@ class PipelineGanttMixin:
             ).pack(side="right", padx=(0, 6))
 
         selected_status_label = self.get_attempt_status_label(selected_summary.get("status")) if selected_summary else ("进行中" if active_attempt else "未开始")
-        main_status = "运行中" if active_attempt and self.is_main_process_running(tab_id) else ("已结束" if selected_session_id else "空闲")
-        async_status = "运行中" if active_attempt and self.has_async_processes(tab_id) else ("已结束" if selected_session_id else "空闲")
+        if is_unarchived_selected:
+            main_status = "未归档"
+            async_status = "未归档"
+        else:
+            main_status = "运行中" if active_attempt and self.is_main_process_running(tab_id) else ("已结束" if selected_session_id else "空闲")
+            async_status = "运行中" if active_attempt and self.has_async_processes(tab_id) else ("已结束" if selected_session_id else "空闲")
         ctk.CTkLabel(
             gantt_header,
             text=f"主步骤链计时: {self.format_elapsed_time(timer_seconds)} | 当前尝试: {selected_status_label} | 主进程: {main_status} | 异步: {async_status}",
@@ -1349,5 +1524,16 @@ class PipelineGanttMixin:
             active_attempt
             or selected_status in {"running", "pending"}
         )
-        self.render_timeline_swimlane(gantt_panel, tab_id, entries, manifest, is_running=swimlane_running)
-        self.safe_after_idle(self.set_scroll_fraction, gantt_panel, restore_scroll)
+        fallback_log_path = selected_timeline_path if selected_timeline_path and os.path.isfile(selected_timeline_path) else ""
+        compact_only = bool(not swimlane_running and len(entries) == 1 and total_seconds <= 10)
+        target_scroll = 0.0 if compact_only else restore_scroll
+        self.render_timeline_swimlane(
+            gantt_panel,
+            tab_id,
+            entries,
+            manifest,
+            is_running=swimlane_running,
+            fallback_log_path=fallback_log_path,
+            compact_only=compact_only,
+        )
+        self.safe_after_idle(self.set_scroll_fraction, gantt_panel, target_scroll)

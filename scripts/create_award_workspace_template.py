@@ -101,27 +101,16 @@ def _patch_workspace_name_in_blueprint(xlsx_path, award_short_name):
         return
     col_map = {name: headers.index(name) + 1 for name in headers if name}
     column_index = col_map["工作区名"]
-    touched = False
+    anchor_row = None
     for row_index in range(2, worksheet.max_row + 1):
         workspace_cell = worksheet.cell(row=row_index, column=column_index)
-        deployed_name = _clean_text(worksheet.cell(row=row_index, column=col_map.get("相应代码和说明文件", 0)).value) if col_map.get("相应代码和说明文件") else ""
-        file_type = _clean_text(worksheet.cell(row=row_index, column=col_map.get("代码/说明", 0)).value) if col_map.get("代码/说明") else ""
-        saved_name = _clean_text(worksheet.cell(row=row_index, column=col_map.get("保存在资料中的名称", 0)).value) if col_map.get("保存在资料中的名称") else ""
-        code_subdir = _clean_text(worksheet.cell(row=row_index, column=col_map.get("代码子文件夹", 0)).value) if col_map.get("代码子文件夹") else ""
         if _clean_text(workspace_cell.value):
-            workspace_cell.value = award_short_name
-            touched = True
-        if deployed_name:
-            ext = os.path.splitext(deployed_name)[1].lower()
-            if not file_type and col_map.get("代码/说明"):
-                inferred_type = "说明" if ext in (".doc", ".docx", ".pdf", ".md", ".txt") else "代码"
-                worksheet.cell(row=row_index, column=col_map["代码/说明"], value=inferred_type)
-            if not saved_name and col_map.get("保存在资料中的名称"):
-                worksheet.cell(row=row_index, column=col_map["保存在资料中的名称"], value=deployed_name)
-            if not code_subdir and col_map.get("代码子文件夹"):
-                worksheet.cell(row=row_index, column=col_map["代码子文件夹"], value="更新代码")
-    if not touched:
-        worksheet.cell(row=2, column=column_index, value=award_short_name)
+            anchor_row = row_index
+            break
+    if anchor_row is None:
+        anchor_row = 2
+    for row_index in range(2, worksheet.max_row + 1):
+        worksheet.cell(row=row_index, column=column_index, value=award_short_name if row_index == anchor_row else None)
     workbook.save(xlsx_path)
 
 

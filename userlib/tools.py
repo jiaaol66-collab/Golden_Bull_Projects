@@ -1,5 +1,5 @@
 print(f'已调用工具{__file__}')
-import sys, os, subprocess, shutil, time, re, platform, ast, threading, json, uuid, urllib.request
+import sys, os, subprocess, shutil, time, re, platform, ast, threading, json, uuid, urllib.request, importlib
 import pandas as pd, numpy as np
 from pathlib import Path
 from collections import OrderedDict
@@ -723,6 +723,7 @@ def copy_file(src, dst, replace=0, silence=0, checkMode=None):
 TIMELINE_LOG_NAME = "时间记录.log"
 TIMELINE_LEGACY_NAME = "时间记录.txt"
 TIMELINE_PREFIX = "GB_TIMELINE "
+_BOOKMARK_CONTEXT_CACHE = {}
 
 
 def _make_timeline_id(prefix):
@@ -789,6 +790,113 @@ def _build_timeline_rel_path(script_path, workspace_root):
     return _compute_timeline_rel_path(script_path, workspace_root)
 
 
+def _list_running_jupyter_servers():
+    servers = []
+    try:
+        list_running_servers = importlib.import_module("notebook.notebookapp").list_running_servers
+        servers.extend(list(list_running_servers()))
+    except Exception:
+        pass
+    try:
+        list_running_servers = importlib.import_module("jupyter_server.serverapp").list_running_servers
+        servers.extend(list(list_running_servers()))
+    except Exception:
+        pass
+
+    deduped = []
+    seen = set()
+    for item in servers:
+        url = str(item.get("url") or "").rstrip("/")
+        root_dir = str(item.get("root_dir") or item.get("notebook_dir") or "").strip()
+        key = (url, root_dir)
+        if not url or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _fetch_jupyter_sessions(server_info):
+    url = str((server_info or {}).get("url") or "").rstrip("/")
+    token = str((server_info or {}).get("token") or "").strip()
+    if not url:
+        return []
+    api_url = f"{url}/api/sessions"
+    if token:
+        api_url = f"{api_url}?token={token}"
+    request = urllib.request.Request(api_url)
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = response.read().decode("utf-8", errors="ignore")
+        data = json.loads(payload)
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _get_vscode_notebook_path():
+    try:
+        raw_path = globals().get("__vsc_ipynb_file__")
+    except Exception:
+        raw_path = ""
+    raw_path = str(raw_path or "").strip()
+    if not raw_path:
+        return ""
+    abs_path = os.path.abspath(raw_path)
+    if os.path.isfile(abs_path):
+        return abs_path
+    return ""
+
+
+def get_runtime_notebook_path():
+    vscode_path = _get_vscode_notebook_path()
+    if vscode_path:
+        return vscode_path
+    try:
+        import ipykernel
+        connection_file = ipykernel.get_connection_file()
+    except Exception:
+        return ""
+
+    match = re.search(r"kernel-(.+)\.json$", os.path.basename(str(connection_file)))
+    if not match:
+        return ""
+    kernel_id = match.group(1)
+
+    for server_info in _list_running_jupyter_servers():
+        root_dir = str(server_info.get("root_dir") or server_info.get("notebook_dir") or "").strip()
+        for session in _fetch_jupyter_sessions(server_info):
+            kernel = session.get("kernel") or {}
+            if str(kernel.get("id") or "").strip() != kernel_id:
+                continue
+            notebook = session.get("notebook") or {}
+            rel_path = str(notebook.get("path") or "").strip()
+            if not rel_path:
+                continue
+            rel_path = rel_path.replace("/", os.sep).replace("\\", os.sep)
+            if root_dir:
+                abs_path = os.path.abspath(os.path.join(root_dir, rel_path))
+                if os.path.isfile(abs_path):
+                    return abs_path
+            return rel_path
+    return ""
+
+
+def resolve_runtime_script_path(path):
+    raw_path = str(path or "").strip()
+    ext = os.path.splitext(raw_path)[1].lower()
+    if raw_path and ext in {".py", ".ipynb"}:
+        return os.path.abspath(raw_path)
+
+    notebook_path = get_runtime_notebook_path()
+    if notebook_path:
+        return notebook_path
+
+    if raw_path:
+        return os.path.abspath(raw_path)
+    return os.path.abspath(os.getcwd())
+
+
 def _normalize_bookmark_context(script_path, path_base, payload):
     payload = payload or {}
     workspace_root = _guess_workspace_root(script_path, path_base)
@@ -832,6 +940,24 @@ def _extract_started_at(t):
         return 0.0
 
 
+def _bookmark_cache_key(script_path):
+    return os.path.normcase(os.path.abspath(str(script_path or "")))
+
+
+def _get_cached_bookmark_context(script_path):
+    return dict(_BOOKMARK_CONTEXT_CACHE.get(_bookmark_cache_key(script_path), {}))
+
+
+def _set_cached_bookmark_context(script_path, context):
+    if not context:
+        return
+    _BOOKMARK_CONTEXT_CACHE[_bookmark_cache_key(script_path)] = dict(context)
+
+
+def _clear_cached_bookmark_context(script_path):
+    _BOOKMARK_CONTEXT_CACHE.pop(_bookmark_cache_key(script_path), None)
+
+
 class BookmarkContext(dict):
     """兼容旧脚本把 start 当作时间戳参与运算的写法。"""
 
@@ -854,6 +980,75 @@ def _append_timeline_log(log_path, payload):
         f.write(TIMELINE_PREFIX + json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def _get_workspace_runtime_root_for_bookmark(workspace_root):
+    workspace_root = os.path.abspath(str(workspace_root or "").strip())
+    if not workspace_root:
+        return ""
+    meta_path = os.path.join(workspace_root, ".gb_workspace.json")
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    award_dir_name = str(payload.get("award_dir_name") or "").strip() or os.path.basename(os.path.dirname(workspace_root))
+    if not workspace_id or not award_dir_name:
+        return ""
+    project_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    runtime_root = os.path.join(project_root, "logs", award_dir_name, workspace_id, "runtime")
+    try:
+        os.makedirs(runtime_root, exist_ok=True)
+    except OSError:
+        return ""
+    return runtime_root
+
+
+def _build_bookmark_runtime_log_path(context):
+    runtime_root = _get_workspace_runtime_root_for_bookmark(context.get("workspace_root"))
+    run_id = str(context.get("run_id") or "").strip()
+    rel_path = str(context.get("rel_path") or "").strip()
+    if not runtime_root or not run_id:
+        return ""
+    basename = os.path.basename(rel_path) or "runtime"
+    safe_basename = re.sub(r'[<>:"/\\\\|?*]+', "_", basename)
+    return os.path.join(runtime_root, f"{run_id}_{safe_basename}.log")
+
+
+def _append_bookmark_runtime_log(context, tag_, now, data_scope="", duration_seconds=None):
+    log_path = _build_bookmark_runtime_log_path(context)
+    if not log_path:
+        return ""
+    rel_path = str(context.get("rel_path") or "")
+    axis = str(context.get("axis") or "")
+    source = str(context.get("source") or "")
+    scope_text = f" ({data_scope})" if data_scope else ""
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            if tag_ == 0:
+                f.write(f"[{now.isoformat(sep=' ', timespec='seconds')}] START{scope_text} {rel_path}\n")
+                f.write(f"run_id={context.get('run_id','')} session_id={context.get('session_id','')} axis={axis} source={source}\n")
+            else:
+                f.write(f"[{now.isoformat(sep=' ', timespec='seconds')}] END{scope_text} {rel_path} duration={duration_seconds or 0.0}s status=success\n")
+                f.write(f"run_id={context.get('run_id','')} session_id={context.get('session_id','')} axis={axis} source={source}\n")
+            f.write(TIMELINE_PREFIX + json.dumps(
+                {
+                    "event": "start" if tag_ == 0 else "end",
+                    "run_id": context.get("run_id", ""),
+                    "session_id": context.get("session_id", ""),
+                    "rel_path": rel_path,
+                    "axis": axis,
+                    "source": source,
+                    "ts": now.isoformat(sep=" ", timespec="milliseconds"),
+                    "duration": duration_seconds if tag_ == 1 else None,
+                    "data_scope": data_scope,
+                },
+                ensure_ascii=False,
+            ) + "\n\n")
+    except OSError:
+        return ""
+    return log_path
+
+
 def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
     """插入书签, 并自动进行时间记录\n
     如已完成将显示~~completed~~，否则为~~in-processing~~
@@ -868,7 +1063,7 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
     # --- 在需要时间记录的文件结束时记录 ---
     # insert_bookmark(__file__, 1, path_t, start)"""
 
-    script_path = os.path.abspath(path)
+    script_path = resolve_runtime_script_path(path)
     filename = os.path.basename(script_path).split('.')[0]
     now = datetime.now()
     now_ts = time.time()
@@ -902,11 +1097,19 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
     else:
         print('文件位置出错! 请检查！')
 
+    start_context = None
     if path_t:
         if os.path.exists(path_base):
             legacy_start = _extract_start_payload(t)
+            cached_context = _get_cached_bookmark_context(script_path)
+            if not legacy_start and cached_context:
+                legacy_start = cached_context
             context = _normalize_bookmark_context(script_path, path_base, legacy_start)
             context["data_scope"] = data_scope
+            if tag_ == 0:
+                start_context = dict(context)
+                start_context["started_at"] = now_ts
+                start_context["started_at_iso"] = now.isoformat(sep=" ", timespec="milliseconds")
             log_path = os.path.join(path_base, TIMELINE_LOG_NAME)
             with open(log_path, 'a', encoding='utf-8') as f:
                 if tag_ == 0:
@@ -931,6 +1134,7 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
                         "data_scope": context["data_scope"],
                     }
                     f.write(TIMELINE_PREFIX + json.dumps(end_payload, ensure_ascii=False) + '\n\n')
+                    _append_bookmark_runtime_log(context, tag_, now, data_scope=context["data_scope"], duration_seconds=duration_seconds)
                 else:
                     f.write(f'\n代码运行{text}:{context["rel_path"]}--({now})\n')
                     start_payload = {
@@ -948,14 +1152,19 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
                         "data_scope": context["data_scope"],
                     }
                     f.write(TIMELINE_PREFIX + json.dumps(start_payload, ensure_ascii=False) + '\n\n')
+                    _append_bookmark_runtime_log(start_context or context, tag_, now, data_scope=context["data_scope"])
+                    _set_cached_bookmark_context(script_path, start_context or context)
         else:
             print('时间记录文件不存在！请检查！')
     if tag_ == 0:
-        start_context = _normalize_bookmark_context(script_path, path_base, {})
-        start_context["started_at"] = now_ts
-        start_context["started_at_iso"] = now.isoformat(sep=" ", timespec="milliseconds")
-        start_context["data_scope"] = data_scope
+        if start_context is None:
+            start_context = _normalize_bookmark_context(script_path, path_base, {})
+            start_context["started_at"] = now_ts
+            start_context["started_at_iso"] = now.isoformat(sep=" ", timespec="milliseconds")
+            start_context["data_scope"] = data_scope
+        _set_cached_bookmark_context(script_path, start_context)
         return BookmarkContext(start_context)
+    _clear_cached_bookmark_context(script_path)
     return t
 
 def check_required_files(required_files, optional_files, appe = ''):

@@ -359,7 +359,9 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
                     "note": note,
                 })
 
-        is_pipeline = order_num is not None and item_type == "代码" and _clean(script).lower().endswith(".py")
+        script_lower = _clean(script).lower()
+        is_step_code = order_num is not None and item_type == "代码" and script_lower.endswith((".py", ".ipynb"))
+        is_pipeline = is_step_code
         if is_pipeline:
             chosen_rel_dir = rel_dir
             chosen_rel_path = os.path.join(rel_dir, script) if rel_dir else script
@@ -391,6 +393,7 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
                 "folder_rel_path": chosen_rel_dir,
                 "rel_path": chosen_rel_path,
                 "other_binding": other_value,
+                "runnable": script_lower.endswith(".py"),
             })
             continue
 
@@ -613,6 +616,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.award_template_creation_deadline = 0.0
         self.award_template_guide_window = None
         self.award_template_guide_context = None
+        self.sidebar_selection_state_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            ".terminal_sidebar_state.json",
+        )
         
         if not os.path.exists("logs"):
             os.makedirs("logs")
@@ -622,6 +629,38 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.poll_process_job = self.safe_after(1000, self.poll_process_states)
         self.bind("<Configure>", self.on_window_configure)
         self.window_resize_job = self.safe_after(150, self.apply_adaptive_layout)
+
+    def load_sidebar_selection_state(self):
+        data = self.read_json_file(self.sidebar_selection_state_path, default={})
+        return data if isinstance(data, dict) else {}
+
+    def save_sidebar_selection_state(self, award_name="", year_text="", workspace_name=""):
+        payload = {
+            "award": _clean(award_name),
+            "year": _clean(year_text),
+            "workspace": _clean(workspace_name),
+            "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            self.write_json_file(self.sidebar_selection_state_path, payload)
+        except Exception:
+            pass
+
+    def remember_sidebar_selection(self, award_name=None, year_text=None, workspace_name=None):
+        award = _clean(award_name if award_name is not None else (self.award_menu.get() if hasattr(self, "award_menu") else ""))
+        year = _clean(year_text if year_text is not None else (self.year_menu.get() if hasattr(self, "year_menu") else ""))
+        workspace = _clean(workspace_name if workspace_name is not None else (
+            self.resolve_workspace_menu_selection(award, year)
+            if hasattr(self, "workspace_menu") and hasattr(self, "workspace_menu_display_map")
+            else ""
+        ))
+        if award == "无可用奖项":
+            award = ""
+        if year == "无可用年份":
+            year = ""
+        if workspace == "无可用工作区":
+            workspace = ""
+        self.save_sidebar_selection_state(award, year, workspace)
 
     def restart_terminal(self):
         if self.app_closing:
@@ -698,6 +737,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
     def on_app_close(self):
         if self.app_closing:
             return
+        try:
+            self.remember_sidebar_selection()
+        except Exception:
+            pass
         self.app_closing = True
         self.cancel_after_handle(self.poll_process_job)
         self.poll_process_job = None
@@ -721,6 +764,10 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
 
     def destroy(self):
         self.app_closing = True
+        try:
+            self.remember_sidebar_selection()
+        except Exception:
+            pass
         self.cancel_after_handle(getattr(self, "poll_process_job", None))
         self.poll_process_job = None
         self.cancel_after_handle(getattr(self, "window_resize_job", None))
@@ -728,6 +775,14 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.cancel_after_handle(getattr(self, "window_resizing_clear_job", None))
         self.window_resizing_clear_job = None
         self.cancel_hide_tab_hover_close()
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
         try:
             super().destroy()
         except tk.TclError:
@@ -774,7 +829,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.award_menu = ctk.CTkOptionMenu(
             self.sidebar,
             values=get_award_labels(),
-            command=self.update_year_menu,
+            command=self.on_award_menu_change,
             corner_radius=RADIUS_MD,
             height=sidebar_menu_height,
             font=sidebar_compact_font,
@@ -807,7 +862,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.workspace_menu = ctk.CTkOptionMenu(
             self.sidebar,
             values=[],
-            command=lambda _value: self.refresh_sidebar_file_structure_button(),
+            command=self.on_workspace_menu_change,
             corner_radius=RADIUS_MD,
             height=sidebar_menu_height,
             font=sidebar_compact_font,
@@ -1021,7 +1076,20 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         )
         self.sidebar_apply_config_json_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
         
-        self.update_year_menu(self.award_menu.get())
+        sidebar_state = self.load_sidebar_selection_state()
+        award_labels = get_award_labels()
+        target_award = _clean(sidebar_state.get("award"))
+        if target_award not in award_labels:
+            target_award = award_labels[0] if award_labels else "无可用奖项"
+        try:
+            self.award_menu.set(target_award)
+        except Exception:
+            pass
+        self.update_year_menu(
+            target_award,
+            selected_year=_clean(sidebar_state.get("year")),
+            selected_workspace=_clean(sidebar_state.get("workspace")),
+        )
 
         self.sidebar_toggle_bar = ctk.CTkFrame(self, width=WIDTH_SIDEBAR_TOGGLE_BAR, corner_radius=RADIUS_NONE, fg_color="transparent")
         self.sidebar_toggle_bar.pack(side="left", fill="y")
@@ -2437,6 +2505,17 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.refresh_sidebar_resource_browser(self.award_menu.get(), selected_year)
         self.refresh_sidebar_config_browser(self.award_menu.get(), selected_year)
         self.refresh_sidebar_file_structure_button(self.award_menu.get(), selected_year)
+        self.remember_sidebar_selection(self.award_menu.get(), selected_year)
+
+    def on_award_menu_change(self, selected_award):
+        self.update_year_menu(selected_award)
+        self.remember_sidebar_selection(selected_award)
+
+    def on_workspace_menu_change(self, _selected_workspace):
+        award_name = self.award_menu.get()
+        year_text = self.year_menu.get()
+        self.refresh_sidebar_file_structure_button(award_name, year_text)
+        self.remember_sidebar_selection(award_name, year_text)
 
     def prompt_display_name(self, title, prompt, initial_value="", allow_empty=True):
         try:
@@ -2546,6 +2625,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             self.update_workspace_menu(selected_award, target_year, selected_workspace=selected_workspace)
             self.refresh_sidebar_resource_browser(selected_award, target_year)
             self.refresh_sidebar_config_browser(selected_award, target_year)
+            self.remember_sidebar_selection(selected_award, target_year)
         else:
             self.year_menu.configure(values=["无可用年份"])
             self.year_menu.set("无可用年份")
@@ -2553,6 +2633,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             self.workspace_menu.set("无可用工作区")
             self.refresh_sidebar_resource_browser(selected_award, "")
             self.refresh_sidebar_config_browser(selected_award, "")
+            self.remember_sidebar_selection(selected_award, "", "")
 
     def update_workspace_menu(self, selected_award, selected_year="", selected_workspace=""):
         workspaces, display_map, reverse_map = self.build_workspace_menu_state(selected_award, selected_year)
@@ -2570,6 +2651,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             self.workspace_menu.configure(values=["无可用工作区"])
             self.workspace_menu.set("无可用工作区")
         self.refresh_sidebar_file_structure_button(selected_award, selected_year)
+        self.remember_sidebar_selection(selected_award, selected_year)
 
     def run_delete_workspace_script(self, workspace_root):
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "delete_workspace.py")
@@ -2914,6 +2996,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 "attempt_pending_final_status": "",
                 "attempt_pending_final_message": "",
                 "attempt_selected_session_id": "",
+                "attempt_selector_scope": "archived",
+                "attempt_manual_selection": False,
                 "attempt_display_map": {},
                 "gantt_final_refresh_job": None,
                 "gantt_final_refresh_session_id": "",
@@ -3173,6 +3257,9 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             tab_data["right_view"] = right_view
 
         tab_data["attempt_selected_session_id"] = _clean(state.get("attempt_selected_session_id"))
+        attempt_selector_scope = _clean(state.get("attempt_selector_scope")).lower()
+        if attempt_selector_scope in {"archived", "unarchived"}:
+            tab_data["attempt_selector_scope"] = attempt_selector_scope
         tab_data["error_folder_rel_path"] = _clean(state.get("error_folder_rel_path"))
         tab_data["error_file_rel_path"] = _clean(state.get("error_file_rel_path"))
         tab_data["error_is_root"] = bool(state.get("error_is_root"))
@@ -3237,6 +3324,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             "left_tab_preferred": left_tab,
             "right_view": "database" if tab_data.get("right_view") == "database" else "output",
             "attempt_selected_session_id": _clean(tab_data.get("attempt_selected_session_id")),
+            "attempt_selector_scope": _clean(tab_data.get("attempt_selector_scope")) or "archived",
             "error_folder_rel_path": _clean(tab_data.get("error_folder_rel_path")),
             "error_file_rel_path": _clean(tab_data.get("error_file_rel_path")),
             "error_is_root": bool(tab_data.get("error_is_root")),
@@ -3512,6 +3600,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         tab_data["attempt_pending_final_status"] = ""
         tab_data["attempt_pending_final_message"] = ""
         tab_data["attempt_selected_session_id"] = session_id
+        tab_data["attempt_manual_selection"] = False
         tab_data["attempt_error_excerpt"] = ""
         tab_data["attempt_error_log_path"] = ""
         self.persist_attempt_snapshot(tab_id, "running", final=False, message="开始执行所选步骤。")
@@ -3540,6 +3629,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         tab_data["timeline_batch_session_id"] = ""
         if summary.get("session_id"):
             tab_data["attempt_selected_session_id"] = summary["session_id"]
+        tab_data["attempt_manual_selection"] = False
         self.schedule_final_gantt_autoscale_refresh(tab_id, summary.get("session_id"))
         self.schedule_gui_state_save(tab_id)
         return summary
@@ -3849,6 +3939,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             if step_id is None or not step_var or step_var.get() != "1":
                 continue
             if not step.get("exists"):
+                continue
+            if not step.get("runnable", True):
                 continue
             tab_data["step_states"][step_id] = "pending"
             selected_orders.append(step_id)
@@ -4285,6 +4377,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                     stderr=subprocess.STDOUT,
                     cwd=manifest["workspace_root"],
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     bufsize=1,
                     universal_newlines=True,
                     env=env
