@@ -169,7 +169,11 @@ else:
     os.rename(path_t_orig, path_t)
     print(f'{path_t_orig}已更名为{path_t}')
 
-# open_file(path_t)
+runner_path = os.path.join(path_t, 'step_0_前期准备', '运行此文件.py')
+if os.path.exists(runner_path):
+    open_file(runner_path)
+else:
+    open_file(path_t)
 
 # con = custom_dialog('确认',f'是否直接开始运行{title}脚本?','confirm','是',
 #                     '否')
