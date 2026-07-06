@@ -177,6 +177,7 @@ if not os.path.exists(f'{rel}年份信息.txt'):
 
 
     print('评奖年份:', yr)
+    make_dir(f'{org}/{yr}', 1)
     make_dir(f'{org}/{yr + 1}', 1)
 
     """↓ 自定义代码块，目的是与原始数据集产生连接，在此可以自定义操作 ↓"""

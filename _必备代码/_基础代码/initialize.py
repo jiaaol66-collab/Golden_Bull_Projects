@@ -157,6 +157,7 @@ print(info0[['工作区文件夹','代码/说明','相应代码和说明文件',
 make_dir(path_t)
 make_dir(path_t + '/step_0_前期准备')
 make_dir(path_t + '/资料')
+make_dir(path_t + '/资料/代码/notebook')
 
 copy_file(f'代码备份/{code}', f'{path_t}/资料/代码')
 copy_file(f'代码备份/{inst}', f'{path_t}/资料/说明')
@@ -178,7 +179,7 @@ for py in os.listdir(rel+'_默认代码'):
     if py == 'default_code.py':
         copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/代码/{py}',1)
     elif py == 'default_notebook.ipynb':
-        copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/说明/notebook/{py}',1)
+        copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/代码/notebook/{py}',1)
     else:
         copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/说明/{py}',1)
 # ————————————————————————————————————————————————————————————————————————————————————————————

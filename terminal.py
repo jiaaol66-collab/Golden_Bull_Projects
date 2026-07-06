@@ -138,9 +138,10 @@ def _is_code_file_candidate(file_name):
     if not name:
         return False
     lowered = name.lower()
-    if not lowered.endswith(".py"):
+    ext = os.path.splitext(lowered)[1]
+    if ext not in {".py", ".ipynb"}:
         return False
-    if "[script]" in lowered or "notebook" in lowered:
+    if "[script]" in lowered:
         return False
     return True
 
@@ -321,6 +322,7 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
     has_other_col = "其他" in col
     has_output_col = "输出文件" in col
     has_code_col = "对应代码" in col
+    has_run_once_col = "只运行一次" in col
 
     steps, verify = [], []
     docs_by_dir = {}
@@ -341,6 +343,7 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
         other_value = _clean(r[col["其他"]]) if has_other_col else ""
         output_markers = _split_markers(r[col["输出文件"]]) if has_output_col else []
         code_label = _clean(r[col["对应代码"]]) if has_code_col else ""
+        run_once_value = _clean(r[col["只运行一次"]]) if has_run_once_col else ""
         note = _clean(r[col["备注"]])
 
         if output_markers and rel_dir:
@@ -393,7 +396,8 @@ def build_workspace_manifest(blueprint_xlsx, workspace_root, award="私募"):
                 "folder_rel_path": chosen_rel_dir,
                 "rel_path": chosen_rel_path,
                 "other_binding": other_value,
-                "runnable": script_lower.endswith(".py"),
+                "run_once": run_once_value,
+                "runnable": script_lower.endswith((".py", ".ipynb")),
             })
             continue
 
@@ -4330,6 +4334,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         tab_data = self.active_tabs_data[tab_id]
         manifest = tab_data["manifest"]
         env = os.environ.copy()
+        target_rel_path = step_info["rel_path"]
+        target_abs_path = os.path.abspath(os.path.join(manifest["workspace_root"], target_rel_path))
         runtime_patch_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gb_runtime_patch")
         step_entry_script = os.path.join(runtime_patch_dir, "step_process_entry.py")
         existing_pythonpath = str(env.get("PYTHONPATH", "")).strip()
@@ -4354,6 +4360,11 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             run_info["timeline_env"] = dict(timeline_env)
             run_info["timeline_started_at"] = time.time()
         env.update(timeline_env)
+        env["GB_SCRIPT_PATH"] = target_abs_path
+        if target_abs_path.lower().endswith(".ipynb"):
+            env["GB_NOTEBOOK_PATH"] = target_abs_path
+        else:
+            env.pop("GB_NOTEBOOK_PATH", None)
         init_ctx = getattr(self, "sidebar_initialize_context", {}) or {}
         init_env_applied = False
         if init_ctx.get("active") and _clean(init_ctx.get("year")) and _clean(init_ctx.get("award")) == _clean(tab_data.get("award")):
@@ -4370,7 +4381,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                     if arg is None:
                         continue
                     extra_argv.append(str(arg))
-                cmd = [sys.executable, step_entry_script, step_info["rel_path"], *extra_argv]
+                cmd = [sys.executable, step_entry_script, target_rel_path, *extra_argv]
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,

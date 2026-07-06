@@ -33,6 +33,7 @@ DB_README.md
 debug-*.md
 *.xlsx
 *.csv
+*.parquet
 
 # Local temp markers
 *in-processing*

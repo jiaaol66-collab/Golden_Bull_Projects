@@ -362,6 +362,18 @@ def custom_dialog(title, message, dialog_type, button1=None, button2=None):
         - 对于 'retry' 模式: 用户点击"重试"返回 True，点击"取消"返回 False
         - 对于 'confirm' 模式: 用户点击"确认"返回 True，点击"取消"返回 False
     """
+    auto_mode = str(os.getenv("GB_AUTO_CONFIRM_DIALOGS", "")).strip()
+    if auto_mode == "1":
+        try:
+            print(f"[AUTO_DIALOG] {dialog_type}: {title} | {message}")
+        except Exception:
+            pass
+        if dialog_type == 'confirm':
+            return True
+        if dialog_type == 'retry':
+            return False
+        return False
+
     root = get_root()
     dialog = ctk.CTkToplevel(root)
     dialog.attributes('-topmost', True)
@@ -724,6 +736,7 @@ TIMELINE_LOG_NAME = "时间记录.log"
 TIMELINE_LEGACY_NAME = "时间记录.txt"
 TIMELINE_PREFIX = "GB_TIMELINE "
 _BOOKMARK_CONTEXT_CACHE = {}
+_BOOKMARK_OUTPUT_CAPTURE = {}
 
 
 def _make_timeline_id(prefix):
@@ -763,6 +776,20 @@ def _get_timeline_data_scope(path_base):
 
 def _get_env_text(name, default=""):
     return os.environ.get(name, default).strip()
+
+
+def _get_env_runtime_path(*names, allowed_exts=None):
+    normalized_exts = {str(ext).lower() for ext in (allowed_exts or set()) if ext}
+    for name in names:
+        raw_path = _get_env_text(name)
+        if not raw_path:
+            continue
+        abs_path = os.path.abspath(raw_path)
+        ext = os.path.splitext(abs_path)[1].lower()
+        if normalized_exts and ext not in normalized_exts:
+            continue
+        return abs_path
+    return ""
 
 
 def _guess_workspace_root(script_path, path_base):
@@ -849,6 +876,9 @@ def _get_vscode_notebook_path():
 
 
 def get_runtime_notebook_path():
+    env_path = _get_env_runtime_path("GB_NOTEBOOK_PATH", "GB_SCRIPT_PATH", allowed_exts={".ipynb"})
+    if env_path:
+        return env_path
     vscode_path = _get_vscode_notebook_path()
     if vscode_path:
         return vscode_path
@@ -887,6 +917,10 @@ def resolve_runtime_script_path(path):
     ext = os.path.splitext(raw_path)[1].lower()
     if raw_path and ext in {".py", ".ipynb"}:
         return os.path.abspath(raw_path)
+
+    env_path = _get_env_runtime_path("GB_NOTEBOOK_PATH", "GB_SCRIPT_PATH", allowed_exts={".py", ".ipynb"})
+    if env_path:
+        return env_path
 
     notebook_path = get_runtime_notebook_path()
     if notebook_path:
@@ -974,6 +1008,193 @@ class BookmarkContext(dict):
         return _extract_started_at(other) - self._started_at()
 
 
+class _TeeStream:
+    def __init__(self, original, handle, stream_name="stdout"):
+        self._original = original
+        self._handle = handle
+        self._stream_name = stream_name
+        self._gb_is_bookmark_tee = True
+
+    def write(self, text):
+        try:
+            if self._original:
+                self._original.write(text)
+        except Exception:
+            pass
+        try:
+            if self._handle:
+                self._handle.write(text)
+        except Exception:
+            pass
+        return len(text or "")
+
+    def flush(self):
+        try:
+            if self._original:
+                self._original.flush()
+        except Exception:
+            pass
+        try:
+            if self._handle:
+                self._handle.flush()
+        except Exception:
+            pass
+
+    @property
+    def encoding(self):
+        try:
+            return getattr(self._original, "encoding", "utf-8")
+        except Exception:
+            return "utf-8"
+
+    def isatty(self):
+        try:
+            return bool(self._original.isatty())
+        except Exception:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+def _start_bookmark_output_capture(script_path, log_path):
+    key = _bookmark_cache_key(script_path)
+    if not log_path or key in _BOOKMARK_OUTPUT_CAPTURE:
+        return
+    try:
+        handle = open(log_path, "a", encoding="utf-8")
+    except OSError:
+        return
+    try:
+        stamp = datetime.now().isoformat(sep=" ", timespec="seconds")
+        handle.write("\n" + "-" * 72 + "\n")
+        handle.write(f"[{stamp}] NOTEBOOK STDOUT/STDERR CAPTURE START\n")
+        handle.flush()
+    except Exception:
+        pass
+    original_out = getattr(sys, "stdout", None)
+    original_err = getattr(sys, "stderr", None)
+    sys.stdout = _TeeStream(original_out, handle, "stdout")
+    sys.stderr = _TeeStream(original_err, handle, "stderr")
+    state = {"stdout": original_out, "stderr": original_err, "handle": handle}
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+    except Exception:
+        ip = None
+    if ip is not None:
+        try:
+            pub = getattr(ip, "display_pub", None)
+            orig_publish = getattr(pub, "publish", None) if pub else None
+            if pub and callable(orig_publish):
+                try:
+                    import inspect
+                    _publish_params = set(inspect.signature(orig_publish).parameters.keys())
+                except Exception:
+                    _publish_params = None
+
+                def _publish_wrapper(data, metadata=None, source=None, transient=None, update=None, **kwargs):
+                    try:
+                        payload = data or {}
+                        text = payload.get("text/plain") or payload.get("text/markdown") or ""
+                        text = str(text) if text is not None else ""
+                        if text:
+                            truncated = text if len(text) <= 6000 else (text[:6000] + "\n...[truncated]...")
+                            handle.write("\n" + "-" * 72 + "\n")
+                            handle.write("[DISPLAY]\n")
+                            handle.write(truncated)
+                            if not truncated.endswith("\n"):
+                                handle.write("\n")
+                            handle.flush()
+                    except Exception:
+                        pass
+                    publish_kwargs = dict(kwargs)
+                    if metadata is not None and (_publish_params is None or "metadata" in _publish_params):
+                        publish_kwargs["metadata"] = metadata
+                    if source is not None and (_publish_params is None or "source" in _publish_params):
+                        publish_kwargs["source"] = source
+                    if transient is not None and (_publish_params is None or "transient" in _publish_params):
+                        publish_kwargs["transient"] = transient
+                    if update is not None and (_publish_params is None or "update" in _publish_params):
+                        publish_kwargs["update"] = update
+                    return orig_publish(data, **publish_kwargs)
+                pub.publish = _publish_wrapper
+                state["ip"] = ip
+                state["display_pub"] = pub
+                state["orig_publish"] = orig_publish
+        except Exception:
+            pass
+        try:
+            events = getattr(ip, "events", None)
+            if events and hasattr(events, "register") and hasattr(events, "unregister"):
+                def _post_run_cell(result):
+                    try:
+                        err = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
+                        if not err:
+                            return
+                        stamp2 = datetime.now().isoformat(sep=" ", timespec="seconds")
+                        handle.write("\n" + "-" * 72 + "\n")
+                        handle.write(f"[{stamp2}] CELL ERROR\n")
+                        handle.write(str(err))
+                        handle.write("\n")
+                        handle.flush()
+                    except Exception:
+                        pass
+                events.register("post_run_cell", _post_run_cell)
+                state["events"] = events
+                state["post_run_cell"] = _post_run_cell
+        except Exception:
+            pass
+    _BOOKMARK_OUTPUT_CAPTURE[key] = state
+
+
+def _stop_bookmark_output_capture(script_path):
+    key = _bookmark_cache_key(script_path)
+    state = _BOOKMARK_OUTPUT_CAPTURE.pop(key, None)
+    if not state:
+        return
+    try:
+        handle = state.get("handle")
+        stamp = datetime.now().isoformat(sep=" ", timespec="seconds")
+        if handle:
+            handle.write("\n" + "-" * 72 + "\n")
+            handle.write(f"[{stamp}] NOTEBOOK STDOUT/STDERR CAPTURE END\n")
+            handle.flush()
+    except Exception:
+        pass
+    try:
+        ip = state.get("ip")
+        pub = state.get("display_pub")
+        orig_publish = state.get("orig_publish")
+        if ip is not None and pub is not None and orig_publish is not None:
+            pub.publish = orig_publish
+    except Exception:
+        pass
+    try:
+        events = state.get("events")
+        callback = state.get("post_run_cell")
+        if events is not None and callback is not None:
+            events.unregister("post_run_cell", callback)
+    except Exception:
+        pass
+    try:
+        if getattr(getattr(sys, "stdout", None), "_gb_is_bookmark_tee", False):
+            sys.stdout = state.get("stdout")
+    except Exception:
+        pass
+    try:
+        if getattr(getattr(sys, "stderr", None), "_gb_is_bookmark_tee", False):
+            sys.stderr = state.get("stderr")
+    except Exception:
+        pass
+    try:
+        handle = state.get("handle")
+        if handle:
+            handle.close()
+    except Exception:
+        pass
+
+
 def _append_timeline_log(log_path, payload):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, 'a', encoding='utf-8') as f:
@@ -1014,6 +1235,26 @@ def _build_bookmark_runtime_log_path(context):
     return os.path.join(runtime_root, f"{run_id}_{safe_basename}.log")
 
 
+def _get_bookmark_runtime_kind(context):
+    rel_path = str((context or {}).get("rel_path") or "").strip().lower()
+    return "notebook" if rel_path.endswith(".ipynb") else "script"
+
+
+def _write_bookmark_runtime_header(handle, context):
+    rel_path = str(context.get("rel_path") or "").strip()
+    workspace_root = str(context.get("workspace_root") or "").strip()
+    parent_rel = str(context.get("parent_rel") or "").strip()
+    kind = _get_bookmark_runtime_kind(context)
+    handle.write("# GB Runtime Log\n")
+    handle.write(f"# kind={kind}\n")
+    handle.write(f"# rel_path={rel_path or '-'}\n")
+    if workspace_root:
+        handle.write(f"# workspace_root={workspace_root}\n")
+    if parent_rel:
+        handle.write(f"# parent_rel={parent_rel}\n")
+    handle.write("# note=该日志记录的是 insert_bookmark() 的时间线摘要，不等同于 notebook 单元格 stdout/stderr 原始输出\n\n")
+
+
 def _append_bookmark_runtime_log(context, tag_, now, data_scope="", duration_seconds=None):
     log_path = _build_bookmark_runtime_log_path(context)
     if not log_path:
@@ -1021,15 +1262,44 @@ def _append_bookmark_runtime_log(context, tag_, now, data_scope="", duration_sec
     rel_path = str(context.get("rel_path") or "")
     axis = str(context.get("axis") or "")
     source = str(context.get("source") or "")
+    parent_rel = str(context.get("parent_rel") or "")
+    parent_run_id = str(context.get("parent_run_id") or "")
+    workspace_root = str(context.get("workspace_root") or "")
+    pid = context.get("pid")
+    kind = _get_bookmark_runtime_kind(context)
+    started_at_iso = str(context.get("started_at_iso") or "").strip()
     scope_text = f" ({data_scope})" if data_scope else ""
     try:
+        is_new_file = not os.path.exists(log_path) or os.path.getsize(log_path) == 0
         with open(log_path, "a", encoding="utf-8") as f:
+            if is_new_file:
+                _write_bookmark_runtime_header(f, context)
+            f.write("-" * 72 + "\n")
             if tag_ == 0:
-                f.write(f"[{now.isoformat(sep=' ', timespec='seconds')}] START{scope_text} {rel_path}\n")
-                f.write(f"run_id={context.get('run_id','')} session_id={context.get('session_id','')} axis={axis} source={source}\n")
+                f.write(f"[{now.isoformat(sep=' ', timespec='seconds')}] {kind.upper()} START{scope_text}\n")
+                f.write(f"rel_path={rel_path or '-'}\n")
+                if workspace_root:
+                    f.write(f"workspace_root={workspace_root}\n")
+                if parent_rel:
+                    f.write(f"parent_rel={parent_rel}\n")
+                if parent_run_id:
+                    f.write(f"parent_run_id={parent_run_id}\n")
+                f.write(f"run_id={context.get('run_id','')} session_id={context.get('session_id','')} axis={axis} source={source} pid={pid}\n")
             else:
-                f.write(f"[{now.isoformat(sep=' ', timespec='seconds')}] END{scope_text} {rel_path} duration={duration_seconds or 0.0}s status=success\n")
-                f.write(f"run_id={context.get('run_id','')} session_id={context.get('session_id','')} axis={axis} source={source}\n")
+                f.write(f"[{now.isoformat(sep=' ', timespec='seconds')}] {kind.upper()} END{scope_text}\n")
+                f.write(f"rel_path={rel_path or '-'}\n")
+                if started_at_iso:
+                    f.write(f"started_at={started_at_iso}\n")
+                f.write(f"ended_at={now.isoformat(sep=' ', timespec='milliseconds')}\n")
+                f.write(f"duration_seconds={duration_seconds or 0.0}\n")
+                f.write("status=success\n")
+                if workspace_root:
+                    f.write(f"workspace_root={workspace_root}\n")
+                if parent_rel:
+                    f.write(f"parent_rel={parent_rel}\n")
+                if parent_run_id:
+                    f.write(f"parent_run_id={parent_run_id}\n")
+                f.write(f"run_id={context.get('run_id','')} session_id={context.get('session_id','')} axis={axis} source={source} pid={pid}\n")
             f.write(TIMELINE_PREFIX + json.dumps(
                 {
                     "event": "start" if tag_ == 0 else "end",
@@ -1105,6 +1375,11 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
             if not legacy_start and cached_context:
                 legacy_start = cached_context
             context = _normalize_bookmark_context(script_path, path_base, legacy_start)
+            if legacy_start:
+                if legacy_start.get("started_at"):
+                    context["started_at"] = legacy_start.get("started_at")
+                if legacy_start.get("started_at_iso"):
+                    context["started_at_iso"] = legacy_start.get("started_at_iso")
             context["data_scope"] = data_scope
             if tag_ == 0:
                 start_context = dict(context)
@@ -1135,6 +1410,8 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
                     }
                     f.write(TIMELINE_PREFIX + json.dumps(end_payload, ensure_ascii=False) + '\n\n')
                     _append_bookmark_runtime_log(context, tag_, now, data_scope=context["data_scope"], duration_seconds=duration_seconds)
+                    if str(context.get("rel_path") or "").lower().endswith(".ipynb"):
+                        _stop_bookmark_output_capture(script_path)
                 else:
                     f.write(f'\n代码运行{text}:{context["rel_path"]}--({now})\n')
                     start_payload = {
@@ -1154,6 +1431,9 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
                     f.write(TIMELINE_PREFIX + json.dumps(start_payload, ensure_ascii=False) + '\n\n')
                     _append_bookmark_runtime_log(start_context or context, tag_, now, data_scope=context["data_scope"])
                     _set_cached_bookmark_context(script_path, start_context or context)
+                    if str(context.get("rel_path") or "").lower().endswith(".ipynb"):
+                        runtime_log_path = _build_bookmark_runtime_log_path(start_context or context)
+                        _start_bookmark_output_capture(script_path, runtime_log_path)
         else:
             print('时间记录文件不存在！请检查！')
     if tag_ == 0:
@@ -1164,6 +1444,8 @@ def insert_bookmark(path, tag_ = 0, path_t = None, t = None):
             start_context["data_scope"] = data_scope
         _set_cached_bookmark_context(script_path, start_context)
         return BookmarkContext(start_context)
+    if str(script_path or "").lower().endswith(".ipynb"):
+        _stop_bookmark_output_capture(script_path)
     _clear_cached_bookmark_context(script_path)
     return t
 

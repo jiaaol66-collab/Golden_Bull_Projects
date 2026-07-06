@@ -1002,12 +1002,99 @@ class WorkspaceUIMixin:
         self.render_right_panel(tab_id)
         self.render_resource_panel(tab_id)
 
+    def get_step_run_history_stats(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return {}
+        manifest = tab_data.get("manifest", {})
+        time_record_path = self.get_time_record_path(manifest) if hasattr(self, "get_time_record_path") else ""
+        if time_record_path and os.path.isfile(time_record_path):
+            signature = (
+                os.path.abspath(time_record_path),
+                os.path.getmtime(time_record_path),
+                os.path.getsize(time_record_path),
+            )
+        else:
+            signature = (os.path.abspath(time_record_path) if time_record_path else "", None, None)
+        cached = tab_data.get("step_history_stats_cache")
+        if isinstance(cached, dict) and cached.get("signature") == signature:
+            return cached.get("stats", {})
+        try:
+            entries = self.get_time_record_entries(tab_id, session_id="", max_items=None, include_all_sessions=True)
+        except Exception:
+            entries = []
+        success_statuses = {"done", "success", "completed"}
+        failed_statuses = {"failed", "error", "cancelled", "unfinished"}
+        stats = {}
+        for entry in entries:
+            rel_path = _clean_text(entry.get("rel_path")).replace("/", os.sep).replace("\\", os.sep)
+            if not rel_path:
+                continue
+            item = stats.setdefault(rel_path, {
+                "run_total": 0,
+                "success_total": 0,
+                "failed_total": 0,
+                "last_status": "",
+                "last_at": None,
+                "last_success_at": None,
+            })
+            item["run_total"] += 1
+            status = _clean_text(entry.get("status")).lower()
+            sort_at = entry.get("end_at") or entry.get("start_at")
+            if status in success_statuses:
+                item["success_total"] += 1
+                if sort_at is not None and (item["last_success_at"] is None or sort_at >= item["last_success_at"]):
+                    item["last_success_at"] = sort_at
+            elif status in failed_statuses:
+                item["failed_total"] += 1
+            if sort_at is not None and (item["last_at"] is None or sort_at >= item["last_at"]):
+                item["last_at"] = sort_at
+                item["last_status"] = status or "done"
+        tab_data["step_history_stats_cache"] = {"signature": signature, "stats": stats}
+        return stats
+
+    def format_step_history_time(self, dt_value):
+        if not dt_value:
+            return ""
+        try:
+            return dt_value.strftime("%m-%d %H:%M")
+        except Exception:
+            return str(dt_value)[:16]
+
+    def get_step_count_badge_meta(self, step, history_stats):
+        rel_path = _clean_text(step.get("rel_path")).replace("/", os.sep).replace("\\", os.sep)
+        stats = history_stats.get(rel_path, {}) if isinstance(history_stats, dict) else {}
+        success_total = int(stats.get("success_total") or 0)
+        run_once_text = _clean_text(step.get("run_once"))
+        run_once_enabled = run_once_text == "是" or run_once_text.lower() in {"1", "true", "yes", "y"}
+        if run_once_enabled and success_total > 1:
+            return {
+                "text": str(success_total),
+                "text_color": "#C2731E",
+                "fg_color": "#FCE7CC",
+                "border_color": "#E08A2E",
+            }
+        if success_total > 10:
+            return {
+                "text": str(success_total),
+                "text_color": "#9A6A00",
+                "fg_color": "#F9EFC6",
+                "border_color": "#E0A82E",
+            }
+        return {
+            "text": str(success_total),
+            "text_color": SUCCESS,
+            "fg_color": "#E6F4EC",
+            "border_color": SUCCESS,
+        }
+
     def render_step_code_tab(self, tab_id, parent, prev_values):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
             return
         manifest = tab_data.get("manifest", {})
         ordered_steps = self.get_manifest_steps_in_order(manifest)
+        step_history_stats = self.get_step_run_history_stats(tab_id)
         runnable_step_ids = {
             step.get("order")
             for step in ordered_steps
@@ -1023,12 +1110,13 @@ class WorkspaceUIMixin:
 
         layout_row = ctk.CTkFrame(parent, fg_color="transparent")
         layout_row.pack(fill="x", expand=False, anchor="n", pady=(2, 0))
-        layout_row.grid_columnconfigure(0, weight=1, uniform="step_split")
-        layout_row.grid_columnconfigure(1, weight=1, uniform="step_split")
+        layout_row.grid_columnconfigure(0, weight=0, minsize=WIDTH_STEP_CONTROL_PANEL)
+        layout_row.grid_columnconfigure(1, weight=1)
         layout_row.grid_rowconfigure(0, weight=1)
 
-        control_col = ctk.CTkFrame(layout_row, fg_color="transparent")
+        control_col = ctk.CTkFrame(layout_row, fg_color="transparent", width=WIDTH_STEP_CONTROL_PANEL)
         control_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        control_col.grid_propagate(False)
 
         status_values = list(tab_data.get("step_states", {}).values())
         if any(value == "error" for value in status_values):
@@ -1177,15 +1265,16 @@ class WorkspaceUIMixin:
             if not is_runnable:
                 text = f"{text} [仅打开]"
             state = "normal" if step.get("exists") and is_runnable else "disabled"
+            badge_meta = self.get_step_count_badge_meta(step, step_history_stats)
 
             row = ctk.CTkFrame(step_scroll, fg_color="transparent")
-            row.pack(fill="x", padx=10, pady=5)
-            row.grid_columnconfigure(0, weight=1)
-            row.grid_columnconfigure(1, weight=0)
-            left_cell = ctk.CTkFrame(row, fg_color="transparent")
-            left_cell.grid(row=0, column=0, sticky="ew")
+            row.pack(fill="x", padx=10, pady=4)
+            row.grid_columnconfigure(0, weight=0)
+            row.grid_columnconfigure(1, weight=1)
+            row.grid_columnconfigure(2, weight=0)
+            row.grid_columnconfigure(3, weight=0)
             cb = ctk.CTkCheckBox(
-                left_cell,
+                row,
                 text=text,
                 variable=var,
                 onvalue="1",
@@ -1194,25 +1283,36 @@ class WorkspaceUIMixin:
                 text_color=state_color,
                 **checkbox_style(),
             )
-            cb.pack(anchor="w")
-            right_cell = ctk.CTkFrame(
+            cb.grid(row=0, column=0, columnspan=2, sticky="ew", padx=(0, 8))
+            count_badge = ctk.CTkFrame(
                 row,
-                fg_color="transparent",
-                width=WIDTH_ACTION_BUTTON_XS + 8,
-                height=HEIGHT_ACTION_BUTTON_XS,
+                width=WIDTH_STEP_COUNT_BADGE,
+                height=22,
+                fg_color=badge_meta["border_color"],
+                corner_radius=6,
             )
-            right_cell.grid(row=0, column=1, sticky="e")
-            right_cell.grid_propagate(False)
+            count_badge.grid(row=0, column=2, sticky="e", padx=(8, 8))
+            count_badge.grid_propagate(False)
+            count_badge.grid_rowconfigure(0, weight=1)
+            count_badge.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                count_badge,
+                text=badge_meta["text"],
+                text_color=badge_meta["text_color"],
+                fg_color=badge_meta["fg_color"],
+                corner_radius=5,
+                font=ui_font(11, "bold"),
+            ).grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
             ctk.CTkButton(
-                right_cell,
+                row,
                 text="打开",
-                width=WIDTH_ACTION_BUTTON_XS,
+                width=WIDTH_STEP_OPEN_BUTTON,
                 height=HEIGHT_BUTTON_XS,
                 corner_radius=RADIUS_SM,
                 state="normal" if step.get("exists") else "disabled",
                 command=lambda p=step.get("abs_path"): self.open_file(p),
                 **button_secondary_style(),
-            ).place(relx=1.0, rely=0.5, anchor="e")
+            ).grid(row=0, column=3, sticky="e")
             tab_data["step_widgets"][step_id] = cb
 
         if tab_data.get("current_step_id") in tab_data.get("step_widgets", {}):
@@ -1573,6 +1673,7 @@ class WorkspaceUIMixin:
             "相应代码和说明文件",
             "保存在资料中的名称",
             "备注",
+            "只运行一次",
             "其他",
             "输出文件",
             "对应代码",

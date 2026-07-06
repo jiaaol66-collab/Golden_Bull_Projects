@@ -12,9 +12,12 @@ FileTreeModel 为纯 Python（不依赖 tkinter），可独立做往返/编辑�
 """
 
 import os
+import sys
 import copy
 import re
 import datetime
+import threading
+import subprocess
 try:
     import tkinter as tk
     from tkinter import ttk, messagebox, simpledialog
@@ -34,15 +37,16 @@ except Exception:
 CANON_COLUMNS = [
     "index", "工作区名", "步骤", "工作区文件夹", "子文件夹1", "子文件夹2", "子文件夹3", "子文件夹4",
     "运行顺序", "代码/说明", "代码子文件夹", "相应代码和说明文件", "保存在资料中的名称",
-    "备注", "其他", "输出文件", "对应代码",
+    "备注", "只运行一次", "其他", "输出文件", "对应代码",
 ]
-ENSURE_TAIL_COLUMNS = ["index", "其他", "输出文件", "对应代码"]
+ENSURE_TAIL_COLUMNS = ["index", "只运行一次", "其他", "输出文件", "对应代码"]
 WORKSPACE_COLUMN_NAME = "工作区名"
 INDEX_COLUMN_NAME = "index"
 UNNAMED_PLACEHOLDER = "(未命名)"
 DEFAULT_NEW_FILE_BASENAME = "未命名"
 BLANK_OPTION_LABEL = "(空白)"
 CODE_SUBDIR_OPTIONS = [BLANK_OPTION_LABEL, "工作区设置", "更新代码", "notebook"]
+RUN_ONCE_OPTIONS = ["否", "是"]
 OUTPUT_MARKER_OPTIONS = ["全量", "ins"]
 RUN_ORDER_LIMIT = 100
 STEP_LIMIT = 20
@@ -84,6 +88,18 @@ def _join_binding_tokens(tokens):
         seen.add(v)
         items.append(v)
     return ",".join(items)
+
+
+def _normalize_yes_no(value, default="否"):
+    text = _clean(value)
+    if text in {"是", "否"}:
+        return text
+    lowered = text.lower()
+    if lowered in {"1", "true", "yes", "y"}:
+        return "是"
+    if lowered in {"0", "false", "no", "n"}:
+        return "否"
+    return default
 
 
 def _default_extension_for_type(file_type):
@@ -416,7 +432,7 @@ class FileTreeModel:
         row = self.rows[ri]
         return {name: self.cell(row, name) for name in (
             "相应代码和说明文件", "代码/说明", "代码子文件夹", "保存在资料中的名称",
-            "运行顺序", "其他", "备注",
+            "运行顺序", "只运行一次", "其他", "备注",
         )}
 
     def output_fields(self, ri):
@@ -2404,17 +2420,47 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 continue
             if self.model.cell(row, "代码/说明") != "代码":
                 continue
+            current_step = _clean(self._effective_step_for_row(ri))
             order_value = _clean(self.model.cell(row, "运行顺序"))
             if not order_value.isdigit():
                 continue
-            
-            # 加上 step 前缀作为提示
-            step_value = _clean(self._effective_step_for_row(ri)) or "无步骤"
+            step_text = current_step or "无步骤"
             filename = self.model.cell(row, "相应代码和说明文件") or f"第{ri + 2}行"
-            label = f"[{step_value}] {filename}"
-            
+            label = f"[{step_text}] {filename}"
             usage.setdefault(int(order_value), []).append(label)
         return usage
+
+    def _shift_run_orders_for_insert(self, exclude_ri, start_order):
+        affected = []
+        for ri, row in enumerate(self.rows):
+            if ri == exclude_ri:
+                continue
+            if self.model.cell(row, "代码/说明") != "代码":
+                continue
+            current_step = _clean(self._effective_step_for_row(ri))
+            order_value = _clean(self.model.cell(row, "运行顺序"))
+            if not order_value.isdigit():
+                continue
+            order_num = int(order_value)
+            if order_num >= start_order:
+                affected.append((ri, order_num))
+        for ri, order_num in sorted(affected, key=lambda item: item[1], reverse=True):
+            self.model._set_on(self.rows[ri], "运行顺序", str(order_num + 1))
+        if affected:
+            self.model.rebuild()
+        return len(affected)
+
+    def _auto_insert_run_order_if_needed(self, ri, target_order):
+        if not str(target_order).isdigit():
+            return True
+        usage = self._collect_run_order_usage(ri)
+        owners = usage.get(int(target_order), [])
+        if not owners:
+            return True
+        owners_text = "、".join(self._usage_owner_text(owner) for owner in owners)
+        shifted = self._shift_run_orders_for_insert(ri, int(target_order))
+        self._log(f"运行顺序 {target_order} 已占用：{owners_text}；已自动插入并顺延 {shifted} 项。")
+        return True
 
     def _collect_step_usage(self, exclude_path=None):
         excluded = tuple(exclude_path or ())
@@ -2626,6 +2672,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             _sync_subdir_widget(force_actual=True)
             render_saved_name_field()
             render_order_field()  # 重新渲染运行顺序字段
+            render_run_once_field()
             render_dynamic_section()
 
         name_state["ext_var"].trace_add("write", _on_ext_change)
@@ -2646,6 +2693,9 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         order_wrap = tk.Frame(pad, bg=PALETTE["surface"])
         order_wrap.pack(fill="x", pady=(0, 0))
         order_field = None
+        run_once_wrap = tk.Frame(pad, bg=PALETTE["surface"])
+        run_once_wrap.pack(fill="x", pady=(0, 0))
+        run_once_field = None
         
         def render_order_field():
             for child in order_wrap.winfo_children():
@@ -2674,6 +2724,33 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                     del self._detail_state["order_field"]
         
         render_order_field()
+
+        def render_run_once_field():
+            for child in run_once_wrap.winfo_children():
+                child.destroy()
+            if type_var.get() == "代码":
+                nonlocal run_once_field
+                run_once_field = self._choice_field(
+                    run_once_wrap,
+                    "只运行一次（只运行一次）",
+                    RUN_ONCE_OPTIONS,
+                    _normalize_yes_no(f.get("只运行一次", "")),
+                    "仅用于调度提示：若历史上已成功运行过，主界面会提示通常可跳过，但仍允许继续运行。",
+                    state_key="run_once_field",
+                )
+            else:
+                tk.Label(
+                    run_once_wrap,
+                    text="说明类型文件不需要设置“只运行一次”",
+                    bg=PALETTE["surface"],
+                    fg=PALETTE["muted"],
+                    font=(FONT, 9),
+                    anchor="w",
+                ).pack(fill="x", pady=(4, 0))
+                if "run_once_field" in self._detail_state:
+                    del self._detail_state["run_once_field"]
+
+        render_run_once_field()
         note_var = self._field(
             pad,
             "备注（备注）",
@@ -2769,11 +2846,16 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                 "保存在资料中的名称": new_src,
                 "备注": note_var.get(),
             }
-            # 只有代码类型才设置运行顺序
+            # 只有代码类型才设置运行顺序和单次运行提示
             if type_var.get() == "代码" and "order_field" in self._detail_state:
                 update_fields["运行顺序"] = self._detail_state["order_field"]["get"]()
+                if update_fields["运行顺序"] and not self._auto_insert_run_order_if_needed(ri, update_fields["运行顺序"]):
+                    return
+                run_once_payload = self._detail_state.get("run_once_field") or {}
+                update_fields["只运行一次"] = _normalize_yes_no((run_once_payload.get("var").get() if run_once_payload.get("var") else "否"))
             else:
                 update_fields["运行顺序"] = ""
+                update_fields["只运行一次"] = ""
             self.model.edit_file(ri, update_fields)
             self._sort_rows()
             # 重建 doc_to_codes 映射关系（重要！每次 rows 变化后都要这样做！）
@@ -3179,6 +3261,203 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.dirty = True
         self.status_var.set(msg)
 
+    def _find_workspace_step0_runner(self):
+        base_path = os.path.abspath(self.blueprint_xlsx_path or "")
+        if not base_path:
+            return ""
+        current_dir = os.path.dirname(base_path)
+        visited = set()
+        for _ in range(8):
+            if not current_dir or current_dir in visited:
+                break
+            visited.add(current_dir)
+            runner_path = os.path.join(current_dir, "step_0_前期准备", "运行此文件.py")
+            if os.path.isfile(runner_path):
+                return runner_path
+            parent_dir = os.path.dirname(current_dir)
+            if parent_dir == current_dir:
+                break
+            current_dir = parent_dir
+        return ""
+
+    def _find_workspace_update_all_code(self):
+        workspace_root = self._find_workspace_root()
+        if not workspace_root:
+            return ""
+        script_path = os.path.join(workspace_root, "update_all_code.py")
+        return script_path if os.path.isfile(script_path) else ""
+
+    def _find_workspace_root(self):
+        base_path = os.path.abspath(self.blueprint_xlsx_path or "")
+        if not base_path:
+            return ""
+        current_dir = os.path.dirname(base_path)
+        visited = set()
+        for _ in range(8):
+            if not current_dir or current_dir in visited:
+                break
+            visited.add(current_dir)
+            if os.path.isdir(os.path.join(current_dir, "参评信息")):
+                return current_dir
+            parent_dir = os.path.dirname(current_dir)
+            if parent_dir == current_dir:
+                break
+            current_dir = parent_dir
+        return ""
+
+    def _get_workspace_python_executable(self):
+        project_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        venv_python = os.path.join(project_root, "myenv", "Scripts", "python.exe")
+        if os.path.isfile(venv_python):
+            return venv_python
+        return sys.executable
+
+    def _run_workspace_script_sync(self, script_path, workspace_root, extra_env=None):
+        if not script_path or not os.path.isfile(script_path):
+            raise FileNotFoundError(script_path or "缺少脚本路径")
+        workspace_root = os.path.abspath(workspace_root or os.path.dirname(script_path))
+        project_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        runtime_patch_dir = os.path.join(project_root, "gb_runtime_patch")
+        step_entry_script = os.path.join(runtime_patch_dir, "step_process_entry.py")
+        env = os.environ.copy()
+        existing_pythonpath = str(env.get("PYTHONPATH", "")).strip()
+        pythonpath_parts = [part for part in existing_pythonpath.split(os.pathsep) if part]
+        if runtime_patch_dir not in pythonpath_parts:
+            pythonpath_parts.insert(0, runtime_patch_dir)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env["GB_SCRIPT_PATH"] = os.path.abspath(script_path)
+        if extra_env:
+            env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
+        python_executable = self._get_workspace_python_executable()
+        rel_script_path = os.path.relpath(os.path.abspath(script_path), workspace_root)
+        return subprocess.run(
+            [python_executable, step_entry_script, rel_script_path],
+            cwd=workspace_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+
+    def _build_process_output_preview(self, result, tail_lines=10):
+        if result is None:
+            return ""
+        combined_output = "\n".join(
+            part.strip()
+            for part in (getattr(result, "stdout", "") or "", getattr(result, "stderr", "") or "")
+            if str(part or "").strip()
+        ).strip()
+        if not combined_output:
+            return ""
+        return "\n".join(combined_output.splitlines()[-tail_lines:])
+
+    def _finish_post_save_sequence(self, post_save_info, result_info):
+        if callable(self.on_saved):
+            try:
+                self.on_saved(self.blueprint_xlsx_path)
+            except Exception:
+                pass
+        if not messagebox:
+            return
+        if result_info.get("status") == "success":
+            msg = f"已按标准格式写回：\n{self.blueprint_xlsx_path}"
+            if post_save_info.get("update_script_path"):
+                msg += f"\n\n已执行：\n{post_save_info['update_script_path']}"
+            if post_save_info.get("runner_path"):
+                msg += f"\n\n已执行：\n{post_save_info['runner_path']}"
+            messagebox.showinfo("保存成功", msg, parent=self)
+            return
+        failed_step = result_info.get("failed_step") or "自动执行"
+        msg = f"已保存文件，但 {failed_step} 执行失败"
+        return_code = result_info.get("returncode")
+        if return_code not in (None, ""):
+            msg += f"，退出码: {return_code}"
+        output_preview = result_info.get("output_preview") or ""
+        if output_preview:
+            msg += f"\n\n最近输出：\n{output_preview}"
+        messagebox.showwarning("自动执行失败", msg, parent=self)
+
+    def _run_post_save_sequence_worker(self, update_script_path, runner_path):
+        workspace_root = self._find_workspace_root()
+        if update_script_path:
+            self._log(f"保存后开始执行 update_all_code.py：{update_script_path}")
+            try:
+                result = self._run_workspace_script_sync(
+                    update_script_path,
+                    workspace_root,
+                    extra_env={"GB_AUTO_CONFIRM_DIALOGS": "1"},
+                )
+            except Exception as exc:
+                self._log(f"执行 update_all_code.py 失败：{exc}")
+                self.after(0, lambda: self._finish_post_save_sequence(
+                    {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
+                    {"status": "failed", "failed_step": "update_all_code.py", "returncode": "", "output_preview": str(exc)},
+                ))
+                return
+            update_preview = self._build_process_output_preview(result, tail_lines=12)
+            if update_preview:
+                self._log("update_all_code.py 输出摘要：\n" + update_preview)
+            if result.returncode != 0:
+                self._log(f"update_all_code.py 执行失败，退出码：{result.returncode}")
+                self.after(0, lambda: self._finish_post_save_sequence(
+                    {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
+                    {"status": "failed", "failed_step": "update_all_code.py", "returncode": result.returncode, "output_preview": self._build_process_output_preview(result)},
+                ))
+                return
+            self._log("update_all_code.py 执行完成，准备运行 step_0。")
+        elif runner_path:
+            self._log("保存后未找到 update_all_code.py，继续按原逻辑运行 step_0。")
+        if runner_path:
+            self._log(f"保存后开始执行 step_0：{runner_path}")
+            try:
+                result = self._run_workspace_script_sync(runner_path, workspace_root)
+            except Exception as exc:
+                self._log(f"执行 step_0_前期准备/运行此文件.py 失败：{exc}")
+                self.after(0, lambda: self._finish_post_save_sequence(
+                    {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
+                    {"status": "failed", "failed_step": "step_0_前期准备/运行此文件.py", "returncode": "", "output_preview": str(exc)},
+                ))
+                return
+            step0_preview = self._build_process_output_preview(result, tail_lines=12)
+            if step0_preview:
+                self._log("step_0 输出摘要：\n" + step0_preview)
+            if result.returncode != 0:
+                self._log(f"step_0_前期准备/运行此文件.py 执行失败，退出码：{result.returncode}")
+                self.after(0, lambda: self._finish_post_save_sequence(
+                    {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
+                    {"status": "failed", "failed_step": "step_0_前期准备/运行此文件.py", "returncode": result.returncode, "output_preview": self._build_process_output_preview(result)},
+                ))
+                return
+            self._log("step_0_前期准备/运行此文件.py 执行完成。")
+        self.after(0, lambda: self._finish_post_save_sequence(
+            {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
+            {"status": "success"},
+        ))
+
+    def _run_post_save_sequence(self):
+        update_script_path = self._find_workspace_update_all_code()
+        runner_path = self._find_workspace_step0_runner()
+        if not update_script_path and not runner_path:
+            self._log("保存后未找到 update_all_code.py 或 step_0_前期准备/运行此文件.py，跳过自动触发。")
+            post_save_info = {"update_script_path": "", "runner_path": "", "started": False}
+            self.after(0, lambda: self._finish_post_save_sequence(post_save_info, {"status": "success"}))
+            return post_save_info
+        threading.Thread(
+            target=self._run_post_save_sequence_worker,
+            args=(update_script_path, runner_path),
+            daemon=True,
+        ).start()
+        return {
+            "update_script_path": update_script_path,
+            "runner_path": runner_path,
+            "started": True,
+        }
+
     def save(self):
         try:
             if self.model:
@@ -3202,13 +3481,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.dirty = False
         self.status_var.set(f"保存成功，已写回 {self.blueprint_xlsx_path}")
         self._log(f"保存成功，已将更新写入 Excel，物理行原位更新，新行已追加至末尾。")
-        if callable(self.on_saved):
-            try:
-                self.on_saved(self.blueprint_xlsx_path)
-            except Exception:
-                pass
-        if messagebox:
-            messagebox.showinfo("保存成功", f"已按标准格式写回：\n{self.blueprint_xlsx_path}", parent=self)
+        self._run_post_save_sequence()
 
     def open_xlsx_file(self):
         if not self.blueprint_xlsx_path:

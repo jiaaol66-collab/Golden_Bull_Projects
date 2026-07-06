@@ -1,6 +1,8 @@
 import os
+import re
 import runpy
 import sys
+import traceback
 from datetime import datetime
 
 
@@ -17,6 +19,112 @@ def _append_trace(event, **fields):
             f.write(" | ".join(parts) + "\n")
     except Exception:
         pass
+
+
+def _is_notebook_path(path):
+    return os.path.splitext(str(path or ""))[1].lower() == ".ipynb"
+
+
+def _strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", str(text or ""))
+
+
+def _normalize_output_text(value):
+    if isinstance(value, list):
+        return "".join(str(part) for part in value)
+    return str(value or "")
+
+
+def _emit_notebook_output(output):
+    output_type = str((output or {}).get("output_type") or "").strip()
+    if output_type == "stream":
+        text = _normalize_output_text((output or {}).get("text", ""))
+        if text:
+            sys.stdout.write(text)
+            if not text.endswith("\n"):
+                sys.stdout.write("\n")
+        return
+
+    if output_type in {"execute_result", "display_data"}:
+        data = (output or {}).get("data") or {}
+        text = (
+            data.get("text/plain")
+            or data.get("text/markdown")
+            or data.get("text/html")
+            or ""
+        )
+        text = _normalize_output_text(text)
+        if text:
+            sys.stdout.write(text)
+            if not text.endswith("\n"):
+                sys.stdout.write("\n")
+        return
+
+    if output_type == "error":
+        traceback_lines = (output or {}).get("traceback") or []
+        if traceback_lines:
+            text = "\n".join(_strip_ansi(line) for line in traceback_lines)
+        else:
+            ename = str((output or {}).get("ename") or "Error")
+            evalue = str((output or {}).get("evalue") or "")
+            text = f"{ename}: {evalue}"
+        if text:
+            sys.stdout.write(text)
+            if not text.endswith("\n"):
+                sys.stdout.write("\n")
+
+
+def _emit_notebook_cell_outputs(cell):
+    for output in list((cell or {}).get("outputs") or []):
+        _emit_notebook_output(output)
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _emit_notebook_exception(exc):
+    text = _strip_ansi(str(exc or "")).strip()
+    if not text:
+        text = f"{type(exc).__name__}: {exc}"
+    sys.stderr.write(text)
+    if not text.endswith("\n"):
+        sys.stderr.write("\n")
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _run_notebook(notebook_path, extra_args):
+    import nbformat
+    from nbclient import NotebookClient
+
+    notebook = nbformat.read(notebook_path, as_version=4)
+    kernel_name = str((((notebook.metadata or {}).get("kernelspec") or {}).get("name")) or "").strip() or None
+    resources = {"metadata": {"path": os.path.dirname(notebook_path) or os.getcwd()}}
+    client = NotebookClient(
+        notebook,
+        timeout=None,
+        allow_errors=False,
+        kernel_name=kernel_name,
+        resources=resources,
+    )
+
+    os.environ["GB_NOTEBOOK_PATH"] = notebook_path
+    os.environ["GB_SCRIPT_PATH"] = notebook_path
+
+    original_argv = list(sys.argv)
+    try:
+        sys.argv = [notebook_path] + list(extra_args or [])
+        with client.setup_kernel():
+            for index, cell in enumerate(notebook.cells):
+                if str((cell or {}).get("cell_type") or "") != "code":
+                    continue
+                client.execute_cell(cell, index)
+                _emit_notebook_cell_outputs(cell)
+    finally:
+        sys.argv = original_argv
 
 
 def main():
@@ -45,7 +153,17 @@ def main():
     original_argv = list(sys.argv)
     try:
         sys.argv = [script_path] + original_argv[2:]
-        runpy.run_path(script_path, run_name="__main__")
+        os.environ["GB_SCRIPT_PATH"] = script_path
+        if _is_notebook_path(script_path):
+            _append_trace("step-entry-notebook", pid=os.getpid(), script=script_path)
+            _run_notebook(script_path, original_argv[2:])
+        else:
+            runpy.run_path(script_path, run_name="__main__")
+    except Exception as exc:
+        if _is_notebook_path(script_path):
+            _emit_notebook_exception(exc)
+            raise SystemExit(1)
+        raise
     finally:
         _append_trace("step-entry-finish", pid=os.getpid(), script=script_path)
         sys.argv = original_argv

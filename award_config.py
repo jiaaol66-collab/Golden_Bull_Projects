@@ -2,15 +2,12 @@ import inspect
 import json
 import os
 
-
 def _clean_text(value):
     return str(value or "").strip()
-
 
 def _normalize_rel_path(path_text):
     text = _clean_text(path_text).replace("\\", "/")
     return "/".join(part for part in text.split("/") if part)
-
 
 AWARD_CONFIG = {
     "私募金牛奖": {
@@ -18,45 +15,51 @@ AWARD_CONFIG = {
         "manifest_award": "私募",
         "config_module": "userlib.prifund_config",
         "config_file": "userlib/prifund_config.py",
-        "config_label": "私募配置",
+        "config_label": "私募配置"
     },
     "公募金牛奖": {
         "folder": "GB_PubFund",
         "manifest_award": "公募",
         "config_module": "",
         "config_file": "",
-        "config_label": "",
+        "config_label": ""
     },
     "银行理财金牛奖(产品奖)": {
         "folder": "GB_BankWM/银行理财产品奖步骤",
         "manifest_award": "银行理财",
         "config_module": "",
         "config_file": "",
-        "config_label": "",
+        "config_label": ""
     },
     "银行理财金牛奖(其他奖)": {
         "folder": "GB_BankWM/银行金牛奖(其他)步骤",
         "manifest_award": "银理其他",
         "config_module": "",
         "config_file": "",
-        "config_label": "",
+        "config_label": ""
     },
     "分析师金牛奖": {
         "folder": "GB_Analyst",
         "manifest_award": "分析师",
         "config_module": "",
         "config_file": "",
-        "config_label": "",
+        "config_label": ""
     },
     "券商资管金牛奖": {
         "folder": "GB_BrokerAM",
         "manifest_award": "券商资管",
+        "config_module": "userlib.broker_am_config",
+        "config_file": "userlib/broker_am_config.py",
+        "config_label": "券商资管配置"
+    },
+    "测试流程": {
+        "folder": "GB_Test",
+        "manifest_award": "测试",
         "config_module": "",
         "config_file": "",
-        "config_label": "", 
-    },
+        "config_label": ""
+    }
 }
-
 
 def _norm_payload(payload):
     payload = payload or {}
@@ -67,7 +70,6 @@ def _norm_payload(payload):
         "config_file": _normalize_rel_path(payload.get("config_file", "")),
         "config_label": _clean_text(payload.get("config_label", "")),
     }
-
 
 def _build_award_folder_map():
     mapping = {}
@@ -86,13 +88,10 @@ def _build_award_folder_map():
             mapping[stripped_label] = folder
     return mapping
 
-
 AWARD_FOLDER_MAP = _build_award_folder_map()
-
 
 def get_award_labels():
     return list(AWARD_CONFIG.keys())
-
 
 def get_award_folder(award_name):
     award_key = _clean_text(award_name)
@@ -102,21 +101,17 @@ def get_award_folder(award_name):
         folder = AWARD_FOLDER_MAP.get(award_key, "")
     return os.path.normpath(folder) if folder else ""
 
-
 def get_manifest_award(award_name):
     payload = AWARD_CONFIG.get(_clean_text(award_name), {})
     return payload.get("manifest_award", _clean_text(award_name))
-
 
 def get_award_config_module(award_name):
     payload = AWARD_CONFIG.get(_clean_text(award_name), {})
     return payload.get("config_module", "")
 
-
 def get_award_config_label(award_name):
     payload = AWARD_CONFIG.get(_clean_text(award_name), {})
     return payload.get("config_label", "")
-
 
 def get_award_config_file(award_name, project_root=None):
     payload = AWARD_CONFIG.get(_clean_text(award_name), {})
@@ -126,15 +121,12 @@ def get_award_config_file(award_name, project_root=None):
     base_dir = project_root or os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(base_dir, config_file))
 
-
 def has_award_config(award_name, project_root=None):
     config_file = get_award_config_file(award_name, project_root=project_root)
     return bool(config_file and os.path.isfile(config_file))
 
-
 def _get_project_root(project_root=None):
     return os.path.abspath(project_root or os.path.dirname(os.path.abspath(__file__)))
-
 
 def _render_module(config_map):
     normalized = {label: _norm_payload(payload) for label, payload in config_map.items()}
@@ -180,14 +172,12 @@ def _render_module(config_map):
     ]
     return "\n".join(pieces).rstrip() + "\n"
 
-
 def _write_award_config_file(config_map, project_root=None):
     target_path = os.path.join(_get_project_root(project_root), "award_config.py")
     content = _render_module(config_map)
     with open(target_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
     return target_path
-
 
 def register_award_template(
     award_name,

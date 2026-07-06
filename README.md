@@ -96,7 +96,7 @@ jupyter kernelspec uninstall GB_env
 - 顶部“按日期更新”区：只记每天新增或调整的内容，后续续写时按新日期新增小节。
 - 下方专题区：保留按功能整理的长期说明，方便集中回看某一块逻辑。
 
-最后更新日期：2026-07-03
+最后更新日期：2026-07-06
 
 ---
 
@@ -166,9 +166,54 @@ jupyter kernelspec uninstall GB_env
 
 ### 券商资管金牛奖
 
-- 待补充
+统一建议放在：
+
+- `GB_BrokerAM/原始数据集/<年份>/`
+
+其中机构原始申报材料当前主链主要使用的是各家机构上传的：
+
+- 基础信息
+- 产品净值
+- 历任基金经理信息
+- 规模
+- 拆分
+- 分红
+- 补充资料 / 定性材料（如有）
+
+除机构申报材料外，券商资管当前还依赖以下额外外部数据源：
+
+- 市场指数 3 项：
+  - `riskfree_rate.xlsx`：无风险收益率
+  - `mkt_close_filled.xlsx`：沪深300收盘价
+  - `mkt_close2_filled.xlsx`：中证全债收盘价
+- 管理人奖 / 公司奖相关外部数据：
+  - `营业收入.xlsx`
+  - `资产管理业务收入.xlsx`
+- 交易日历：
+  - 当前主链默认不再依赖单独的 `trade_days.xlsx`，而是由 `exchange_calendars` 动态生成上交所交易日历
+  - 若后续需要固化历史口径或脱离 `exchange_calendars` 运行，可额外准备 `trade_days.xlsx` 作为兼容输入
+
+这些额外数据在当前代码里的主要消费位置是：
+
+- 市场指数：`step_0_前期准备/0_市场指数入库/1_市场指数提取与入库.ipynb` 负责提取、处理、入库；下游 `step_3 ~ step_5` 再消费 `riskfree_rate / mkt_close_filled / mkt_close2_filled`
+- 管理人奖 / 公司奖：`step_5_计算/2_排名.py` 在 `yr == 2024` 时会读取 `营业收入.xlsx` 与 `资产管理业务收入.xlsx`
+- 交易日历：`step_4_缺失填充/1_缺失判定与填充.py` 与 `step_5_计算/1_计算.py` 当前均通过 `exchange_calendars` 直接生成
 
 ## 按日期更新
+
+### 2026-07-06
+
+- 树状文件编辑器的保存后联动已改成完整串行链路：`gui/file_tree_editor.py` 现在会在写回 `文件结构.xlsx` 后，优先执行**工作区根目录**的 `update_all_code.py`，再执行 `step_0_前期准备/运行此文件.py`；两个脚本都跑完后，才统一刷新工作区并弹最终提示框。这样中间不会先刷新一遍旧状态，失败时弹窗也会附带最近输出摘要，便于直接定位问题。
+- `file_tree_editor.py` 同时新增了 `只运行一次` 配置列与下拉框（`是/否`）。这个配置只用于主界面的软提示，不做硬拦截；如果某个脚本历史上已经成功运行过，步骤区会提示“通常可跳过”，但仍允许继续勾选和运行。
+- 工作区步骤区的 UI 已收成单行：`选中框 - 名称 - 成功次数计数块 - 打开按钮`。左侧控制列同步收窄，计数块按历史成功次数着色，其中 `只运行一次=是` 且成功次数大于 1 时显示橙色，其余脚本按成功次数分为绿色 / 黄色，不再出现红色提示块。
+- notebook 调度日志补做了一轮收口：`gb_runtime_patch/step_process_entry.py` 现在会把 notebook 单元格输出按顺序平铺到日志里，并去掉 ANSI 颜色控制符；当 notebook 执行失败时，也不再额外叠加一坨重复 traceback。与此同时，运行路径解析会优先读取 `GB_NOTEBOOK_PATH` / `GB_SCRIPT_PATH`，减少 `.ipynb` 在调度模式下拿不到 `__file__` 的问题。
+- 根 README 这里后续只保留通用 GUI / terminal / 运行框架更新；奖项业务相关改动分别沉淀到 `GB_PriFund/README.md` 与 `GB_BrokerAM/README.md`。
+
+### 2026-07-05
+
+- notebook / terminal 混合编排正式打通：`gb_runtime_patch/step_process_entry.py` 已支持 `.py` 走 `runpy`、`.ipynb` 走 `nbclient`；`terminal.py` 现会把 `.ipynb` 识别为可执行步骤并透传 `GB_NOTEBOOK_PATH`、`GB_SCRIPT_PATH` 及同一轮 attempt/session 上下文。对应 notebook 模板也已收口为“保留原有 `from userlib.tools import *` 导入结构，只在后续 cell 增量补运行路径适配”，避免为接入 terminal 而改业务层导入风格。
+- `userlib/tools.py` 的 notebook 输出兼容补稳：`display_pub.publish()` 的包装层已改为按底层真实签名选择性透传 `metadata/source/transient/update`，修复部分 notebook 内核下 `ZMQDisplayPublisher.publish() got an unexpected keyword argument 'source'`，避免写库或展示阶段被显示层包装器打断。
+- 树状文件编辑器的“运行顺序”冲突处理已收口为全局自动插入：占用提示重新按全局顺序统计；当用户把某个代码文件改到一个已被占用的运行顺序时，系统不再弹确认框，而是自动将该文件插入到该序号，并把全局所有 `>= 该序号` 的后续代码顺延一位。对应 helper 也已改名为更准确的 `_auto_insert_run_order_if_needed()`。
 
 ### 2026-07-03
 
@@ -177,6 +222,8 @@ jupyter kernelspec uninstall GB_env
 - 流水线尝试切换补调：顶部“已归档 / 未归档”已从占位较大的 tab 收敛为切换按钮；未归档列表与已归档列表不再混放，切换当前范围或切换尝试时，也会同步重置流水线滚动位置，减少旧滚动偏移把内容顶出视区的问题。
 - notebook 独立日志已落地：除全局 `参评信息/时间记录.log` 外，`insert_bookmark()` 现在还会为 notebook 手动记录额外生成工作区级独立日志，路径落在 `logs/<奖项目录>/<workspace_id>/runtime/` 下，例如 `run_xxx_2_数据入库.ipynb.log`；该日志已包含该次 notebook 运行的 `start/end`、`run_id/session_id` 与结构化 `GB_TIMELINE` 记录，便于按文件单独排查。
 - 流水线未归档视图的打开入口已补一层兜底：当某条未归档记录暂时找不到对应归档日志时，当前实现会优先尝试定位该条记录的独立 `.log`；若独立日志尚未生成，则再回落到全局 `时间记录.log`，避免点击后完全无响应。
+- notebook 独立日志语义补强：`insert_bookmark()` 生成的工作区级独立日志现在会补写头部摘要、文件类型、工作区根目录、父任务、开始/结束时间与耗时等可读字段；因此即便暂时还没有 notebook 单元格原始输出，也能先从独立 `.log` 里直接看清这次手动记录对应的是哪个 `.ipynb`、归属哪条父链以及完整起止区间。
+- 未归档短流水线的紧凑缩放补一轮：`gui/pipeline_gantt.py` 现对“少量、短时长”的记录单独走紧凑刻度；像 notebook 手动记录这类未归档短尝试，不再硬套原先偏长流程的秒级像素比，从而减少上半部泳道图被明显空白撑开的情况；单条极短记录则继续直接折叠泳道图。
 - 这轮已经试过、后续默认不要再重复投入的方向也一并记下：
   - 通过 `notebook.notebookapp` / `jupyter_server.serverapp` 反查运行中 server/session，再自动推 notebook 文件名：在当前 VS Code notebook 环境里不稳定，曾出现黄色波浪、拿不到 server、拿不到 session，最终没有作为主方案保留。
   - 依赖 `tools.py` 内部 `globals().get("__vsc_ipynb_file__")` 自动取 notebook 文件名：理论上接近可用，但模块内 `globals()` 与 notebook 单元格全局并不等价，实际不如直接传 `file` 稳定，因此当前不再继续沿这个方向堆 patch。
@@ -185,8 +232,8 @@ jupyter kernelspec uninstall GB_env
   - 仅靠“压低泳道图最小高度”解决未归档大空白：已经试过一轮，效果不足，说明空白不只是泳道图区高度问题；后续应优先查外层布局/滚动恢复，不再把时间耗在继续微调 `body_height` 上。
   - 把 notebook 独立日志理解为“等同真实脚本 stdout/stderr 输出”：这一路已经验证不成立，当前独立 `.log` 本质上仍是时间记录侧的结构化回放；后续若要补“真正输出日志”，应单开一套 notebook 输出采集方案，而不是继续往现有 `GB_TIMELINE` 文本里硬塞。
 - 当前仍保留两个待继续收口的问题：
-  - 未归档视图的大空白：单条、短时长 notebook 记录虽然已加“紧凑模式”和滚动复位，但当前 `流水线` 页上半部仍可能残留明显空白，说明问题未完全收住，后续需要继续排查外层布局容器或滚动恢复链路。
-  - 未归档日志语义仍偏弱：现在 notebook 独立日志已经生成，但内容仍以“时间记录事件回放”为主，更多是时间线明细而不是用户理解中的“脚本输出日志”；后续需要决定是否把 notebook 的真实单元格输出、异常文本或摘要结果也纳入未归档日志体系。
+  - notebook 真实输出尚未进入独立日志：当前独立 `.log` 已能看清文件、父链、起止时间与耗时，但本质上仍属于 `insert_bookmark()` 时间线摘要；后续若要进一步贴近用户理解中的“notebook 日志”，仍需要单开一套 notebook 单元格输出 / 异常文本采集方案。
+  - 未归档短流水线虽已明显收紧，但若后续仍出现大空白，应优先排查外层布局容器、滚动恢复链路或其它非时间轴缩放因素，而不是继续只改 `body_height` 常量。
 
 ### 2026-07-02
 
@@ -200,8 +247,6 @@ jupyter kernelspec uninstall GB_env
 
 ### 2026-06-30
 
-- 修复 `净值覆盖年份/规模覆盖年份` 的解析兼容性：支持 `np.int32`、`numpy.ndarray`、字符串混合形态，避免 `ast.literal_eval` 报 `ValueError: malformed node or string ... <ast.Call ...>`（影响：私募规模填充、私募信息汇总）
-- 兼容 pandas 的 FutureWarning：调整 `groupby.apply` 与 `fillna` 的写法，减少未来版本行为变更告警刷屏（影响：私募年期判定）
 - 修复运行日志“输出两遍”：处理 Windows 的 CRLF（`\r\n`）被误当成覆盖式 `\r` 导致重复落盘的问题（影响：异步桥接日志/主日志汇总）
 - 运行日志目录统一到仓库根目录 `logs/`（不再写到 `gui/logs/`）
 - 删除工作区脚本补稳：脚本从任意工作目录启动时，仍能正确导入 `award_config`（避免 `ModuleNotFoundError`）

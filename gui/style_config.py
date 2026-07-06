@@ -161,6 +161,9 @@ WIDTH_SELECT_TOGGLE_BUTTON = 74  # "全选/全不选"按钮宽度
 WIDTH_FILTER_BUTTON = 70  # "筛选"按钮宽度
 WIDTH_QUERY_BUTTON = 76  # "查行数/前20行"按钮宽度
 WIDTH_ATTEMPT_MENU = 320  # 流水线页"尝试"下拉框宽度
+WIDTH_STEP_CONTROL_PANEL = 248  # 步骤页左侧控制列宽度
+WIDTH_STEP_COUNT_BADGE = 38  # 步骤列表运行次数小方块宽度
+WIDTH_STEP_OPEN_BUTTON = 52  # 步骤列表"打开"按钮宽度
 
 # 文本换行宽度:
 # 对应左栏提示、代码文件夹说明、说明文档卡片、右侧输出/数据库卡片中的说明文字。

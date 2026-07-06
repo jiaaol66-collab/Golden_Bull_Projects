@@ -37,6 +37,29 @@ def _norm_rel(path):
 
 
 class PipelineGanttMixin:
+    def set_scroll_fraction_safe(self, scroll_frame, fraction):
+        try:
+            canvas = getattr(scroll_frame, "_parent_canvas", None)
+            if not canvas:
+                return
+            scroll_frame.update_idletasks()
+            try:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            except Exception:
+                pass
+            bbox = canvas.bbox("all")
+            if bbox:
+                total_height = max(1, bbox[3] - bbox[1])
+                canvas_height = max(1, canvas.winfo_height())
+                if total_height <= canvas_height + 4:
+                    fraction = 0.0
+        except Exception:
+            pass
+        try:
+            self.set_scroll_fraction(scroll_frame, fraction)
+        except Exception:
+            return
+
     def get_workspace_view_name(self, tab_id):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
@@ -867,6 +890,19 @@ class PipelineGanttMixin:
             "body_height": body_height,
         }
 
+    def get_compact_timeline_scale_config(self, total_seconds, base_scale, entry_count=1):
+        total_seconds = max(1.0, float(total_seconds or 1.0))
+        entry_count = max(1, int(entry_count or 1))
+        compact_tick_seconds = 15 if total_seconds <= 60 else 30
+        compact_body_cap = 150 if entry_count == 1 and total_seconds <= 20 else (190 if total_seconds <= 90 else 230)
+        compact_body_height = min(compact_body_cap, max(96, int(total_seconds * 1.4) + 24))
+        pixels_per_second = max(0.8, float(compact_body_height - 24) / total_seconds)
+        return {
+            "tick_seconds": max(int(base_scale.get("tick_seconds", compact_tick_seconds)), compact_tick_seconds),
+            "pixels_per_second": min(float(base_scale.get("pixels_per_second", pixels_per_second)), pixels_per_second),
+            "body_height": compact_body_height,
+        }
+
     def get_timeline_entry_end(self, entry, fallback_now=None):
         fallback_now = fallback_now or datetime.datetime.now()
         return entry.get("end_at") or fallback_now
@@ -1087,7 +1123,7 @@ class PipelineGanttMixin:
         )
         self.bind_timeline_item_open(canvas, tag, workspace_root, entry)
 
-    def render_timeline_swimlane(self, parent, tab_id, entries, manifest, is_running=False, fallback_log_path="", compact_only=False):
+    def render_timeline_swimlane(self, parent, tab_id, entries, manifest, is_running=False, fallback_log_path="", compact_only=False, compact_layout=False):
         workspace_root = manifest.get("workspace_root", "")
         main_entries, async_lanes = self.build_timeline_lane_groups(entries)
         async_lane_count = max(1, len(async_lanes))
@@ -1107,8 +1143,10 @@ class PipelineGanttMixin:
         max_end = max(valid_ends) if valid_ends else now_dt
         total_seconds = max(1, int((max_end - min_start).total_seconds()))
         scale_config = self.get_timeline_scale_config(total_seconds, is_running)
+        if compact_layout and not is_running:
+            scale_config = self.get_compact_timeline_scale_config(total_seconds, scale_config, entry_count=len(entries))
         body_height = scale_config["body_height"]
-        if not is_running and len(entries) <= 2 and total_seconds <= 10:
+        if compact_only:
             body_height = min(body_height, 132)
         total_height = TIMELINE_HEADER_HEIGHT + body_height
 
@@ -1191,6 +1229,8 @@ class PipelineGanttMixin:
         detail_hint = "下方记录打开对应日志"
         if compact_only:
             detail_hint = "当前为单条短记录，已折叠泳道图；下方记录打开对应日志"
+        elif compact_layout:
+            detail_hint = "当前为短时长记录，已压缩泳道图高度；上方色块打开代码文件，下方记录打开对应日志"
         else:
             detail_hint = "上方色块打开代码文件，下方记录打开对应日志"
         ctk.CTkLabel(
@@ -1284,8 +1324,9 @@ class PipelineGanttMixin:
         manifest = tab_data.get("manifest", {})
         if not gantt_header or not gantt_panel:
             return
-        restore_scroll = self.get_scroll_fraction(gantt_panel)
-        tab_data["gantt_scroll_fraction"] = restore_scroll
+        restore_scroll = tab_data.get("gantt_scroll_fraction")
+        if restore_scroll is None:
+            restore_scroll = self.get_scroll_fraction(gantt_panel)
         tab_data["gantt_last_refresh"] = time.monotonic()
         for widget in gantt_header.winfo_children():
             widget.destroy()
@@ -1377,14 +1418,17 @@ class PipelineGanttMixin:
                     pass
         else:
             ctk.CTkLabel(attempt_select_row, text=empty_text, text_color=TEXT_MUTED).pack(side="left")
-        attempt_action_row = ctk.CTkFrame(gantt_header, fg_color="transparent")
-        attempt_action_row.pack(fill="x", pady=(0, 6))
         attempt_dir = ""
         if selected_session_id and not is_unarchived_selected:
             attempt_dir = self.get_attempt_dir(manifest, selected_session_id)
         elif not selected_session_id:
             attempt_dir = self.get_attempts_root(manifest)
-        if attempt_dir:
+        show_attempt_dir_button = bool(attempt_dir)
+        show_rename_attempt_button = bool(selected_session_id and not is_unarchived_selected)
+        if show_attempt_dir_button or show_rename_attempt_button:
+            attempt_action_row = ctk.CTkFrame(gantt_header, fg_color="transparent")
+            attempt_action_row.pack(fill="x", pady=(0, 6))
+        if show_attempt_dir_button:
             ctk.CTkButton(
                 attempt_action_row,
                 text="打开尝试目录",
@@ -1394,7 +1438,7 @@ class PipelineGanttMixin:
                 command=lambda p=attempt_dir: self.open_path(p, ensure_dir=True),
                 **button_secondary_style(),
             ).pack(side="right")
-        if selected_session_id and not is_unarchived_selected:
+        if show_rename_attempt_button:
             ctk.CTkButton(
                 attempt_action_row,
                 text="重命名尝试",
@@ -1506,7 +1550,8 @@ class PipelineGanttMixin:
                 wraplength=WRAP_PANEL_LG,
                 justify="left",
             ).pack(anchor="w", padx=10, pady=(0, 10))
-            self.safe_after_idle(self.set_scroll_fraction, gantt_panel, restore_scroll)
+            tab_data["gantt_scroll_fraction"] = restore_scroll
+            self.safe_after_idle(self.set_scroll_fraction_safe, gantt_panel, restore_scroll)
             return
 
         valid_starts = [entry["start_at"] for entry in entries if entry.get("start_at")]
@@ -1525,7 +1570,8 @@ class PipelineGanttMixin:
             or selected_status in {"running", "pending"}
         )
         fallback_log_path = selected_timeline_path if selected_timeline_path and os.path.isfile(selected_timeline_path) else ""
-        compact_only = bool(not swimlane_running and len(entries) == 1 and total_seconds <= 10)
+        compact_layout = bool(not swimlane_running and len(entries) <= 3 and total_seconds <= 180)
+        compact_only = bool(compact_layout and len(entries) == 1 and total_seconds <= 8)
         target_scroll = 0.0 if compact_only else restore_scroll
         self.render_timeline_swimlane(
             gantt_panel,
@@ -1535,5 +1581,7 @@ class PipelineGanttMixin:
             is_running=swimlane_running,
             fallback_log_path=fallback_log_path,
             compact_only=compact_only,
+            compact_layout=compact_layout,
         )
-        self.safe_after_idle(self.set_scroll_fraction, gantt_panel, target_scroll)
+        tab_data["gantt_scroll_fraction"] = target_scroll
+        self.safe_after_idle(self.set_scroll_fraction_safe, gantt_panel, target_scroll)
