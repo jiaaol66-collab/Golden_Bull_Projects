@@ -21,7 +21,6 @@ try:
 except Exception:
     duckdb = None
 
-
 def _clean_text(value):
     if value is None:
         return ""
@@ -773,8 +772,12 @@ class WorkspaceUIMixin:
         workspace_stepper_container = ctk.CTkFrame(parent_frame, fg_color="transparent")
         tab_data["workspace_stepper_container"] = workspace_stepper_container
 
-        workspace_view_tabview = ctk.CTkTabview(parent_frame, **tabview_style())
-        workspace_view_tabview.pack(fill="both", expand=True, padx=8, pady=(0, 2))
+        workspace_view_tabview = ctk.CTkTabview(
+            parent_frame,
+            command=lambda tid=tab_id: self.on_workspace_view_changed(tid),
+            **tabview_style(),
+        )
+        workspace_view_tabview.pack(fill="both", expand=True, padx=4, pady=(0, 0))
         main_view = workspace_view_tabview.add("主界面")
         gantt_view = workspace_view_tabview.add("流水线")
         data_view = workspace_view_tabview.add("数据文件")
@@ -787,18 +790,18 @@ class WorkspaceUIMixin:
         main_view.grid_rowconfigure(2, weight=1)
 
         content_container = ctk.CTkFrame(main_view, fg_color="transparent")
-        content_container.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
+        content_container.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 0))
         content_container.grid_propagate(False)
         tab_data["content_container"] = content_container
 
         # 底部控制台区域主要对应 outer_panel_style、input_box_style 和控制台高度常量。
         console_sash = ctk.CTkFrame(main_view, height=HEIGHT_SASH, fg_color=BORDER, corner_radius=RADIUS_XS, cursor="sb_v_double_arrow")
-        console_sash.grid(row=1, column=0, sticky="ew", padx=8, pady=(2, 0))
+        console_sash.grid(row=1, column=0, sticky="ew", padx=4, pady=(1, 0))
         console_sash.bind("<ButtonPress-1>", lambda event, tid=tab_id: self.start_console_resize(tid, event))
         tab_data["console_sash"] = console_sash
 
         console_container = ctk.CTkFrame(main_view, height=tab_data["console_height"], **outer_panel_style())
-        console_container.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        console_container.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 2))
         console_container.pack_propagate(False)
         console_container.grid_columnconfigure(0, weight=1)
         console_container.grid_rowconfigure(2, weight=1)
@@ -814,11 +817,11 @@ class WorkspaceUIMixin:
         tab_data["gantt_panel"] = gantt_panel
 
         content_frame = ctk.CTkFrame(content_container, fg_color="transparent")
-        content_frame.pack(fill="both", expand=True, pady=(0, 3))
+        content_frame.pack(fill="both", expand=True, pady=(0, 1))
 
         # 主界面保持“代码执行区优先”，说明栏只占较窄固定宽度。
         left_outer = ctk.CTkFrame(content_frame, width=self.get_left_panel_width(tab_data["manifest"]), **outer_panel_style())
-        left_outer.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        left_outer.pack(side="left", fill="both", expand=True, padx=(0, 3))
         left_header = ctk.CTkFrame(left_outer, fg_color="transparent")
         left_header.pack(fill="x", padx=10, pady=(8, 0))
         left_divider = ctk.CTkFrame(left_outer, fg_color=DIVIDER, height=HEIGHT_DIVIDER, corner_radius=RADIUS_NONE)
@@ -829,7 +832,7 @@ class WorkspaceUIMixin:
         self.active_tabs_data[tab_id]["left_panel"] = left_panel
 
         middle_outer = ctk.CTkFrame(content_frame, width=WIDTH_MIDDLE_PANEL, **outer_panel_style())
-        middle_outer.pack(side="left", fill="both", expand=False, padx=(4, 0))
+        middle_outer.pack(side="left", fill="both", expand=False, padx=(3, 0))
         middle_outer.pack_propagate(False)
         middle_header = ctk.CTkFrame(middle_outer, fg_color="transparent")
         middle_header.pack(fill="x", padx=10, pady=(8, 0))
@@ -874,7 +877,7 @@ class WorkspaceUIMixin:
         self.active_tabs_data[tab_id]["results_panel"] = results_panel
 
         log_ctrl_frame = ctk.CTkFrame(console_container, fg_color="transparent")
-        log_ctrl_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(3, 0))
+        log_ctrl_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(2, 0))
         ctk.CTkLabel(log_ctrl_frame, text="实时运行简报", text_color=TEXT_PRIMARY, font=ui_font(14, "bold")).pack(side="left")
         ctk.CTkLabel(log_ctrl_frame, text="已过滤冗余输出", text_color=TEXT_MUTED).pack(side="left", padx=(8, 0))
         ctk.CTkButton(
@@ -887,7 +890,7 @@ class WorkspaceUIMixin:
         ).pack(side="right")
 
         progress_label = ctk.CTkLabel(console_container, text="", anchor="w", text_color=ACCENT_HOVER, font=ui_font(13, "bold"))
-        progress_label.grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 0))
+        progress_label.grid(row=1, column=0, sticky="ew", padx=8, pady=(1, 0))
         progress_label.grid_remove()
         self.active_tabs_data[tab_id]["progress_label"] = progress_label
 
@@ -898,21 +901,44 @@ class WorkspaceUIMixin:
             corner_radius=RADIUS_XL,
             **input_box_style(),
         )
-        log_box.grid(row=2, column=0, sticky="nsew", padx=10, pady=(4, 6))
+        log_box.grid(row=2, column=0, sticky="nsew", padx=8, pady=(2, 4))
         self.active_tabs_data[tab_id]["log_box"] = log_box
         self.bind_log_box_auto_follow(tab_id, log_box)
 
         self.render_tab_content(tab_id)
         self.render_workspace_stepper(tab_id)
-        self.render_gantt_tab(tab_id)
-        self.render_calc_results_panel(tab_id)
         try:
             workspace_view_tabview.set(selected_workspace_view)
         except Exception:
             workspace_view_tabview.set("主界面")
         tab_data["workspace_view_preferred"] = selected_workspace_view
+        tab_data["gantt_panel_dirty"] = True
+        tab_data["data_panel_dirty"] = True
+        tab_data["resource_panel_dirty"] = True
+        tab_data["results_panel_dirty"] = True
         self.schedule_gui_state_save(tab_id)
-        self.safe_after(80, self.apply_console_height, tab_id, self.active_tabs_data.get(tab_id, {}).get("console_height"), False)
+        self.safe_after(80, self.apply_console_height, tab_id, None, False)
+
+    def on_workspace_view_changed(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        view_name = self.get_workspace_view_name(tab_id)
+        tab_data["workspace_view_preferred"] = view_name
+        if not tab_data.get("suspend_gui_state_save"):
+            self.schedule_gui_state_save(tab_id)
+
+        if view_name == "流水线" and tab_data.pop("gantt_panel_dirty", False):
+            self.render_gantt_tab(tab_id)
+        elif view_name == "数据文件" and tab_data.pop("data_panel_dirty", False):
+            self.render_right_panel(tab_id)
+        elif view_name == "规则/所给数据集" and tab_data.pop("resource_panel_dirty", False):
+            self.render_resource_panel(tab_id)
+        elif view_name == "计算结果" and tab_data.pop("results_panel_dirty", False):
+            self.render_calc_results_panel(tab_id)
+        elif view_name == "主界面" and tab_data.pop("main_panel_dirty", False):
+            self.render_workspace_stepper(tab_id)
+            self.refresh_output_board(tab_id)
 
     def render_tab_content(self, tab_id):
         tab_data = self.active_tabs_data[tab_id]
@@ -981,14 +1007,20 @@ class WorkspaceUIMixin:
         #             text_color=TEXT_MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 4))
 
         # 左侧“步骤代码 / 代码文件夹”切换统一走 tabview_style。
-        left_tabview = ctk.CTkTabview(left_panel, **tabview_style())
+        left_tabview = ctk.CTkTabview(
+            left_panel,
+            command=lambda tid=tab_id: self.on_left_view_changed(tid),
+            **tabview_style(),
+        )
         left_tabview.pack(fill="both", expand=True)
         step_tab = left_tabview.add("步骤代码")
         code_tab = left_tabview.add("代码文件夹")
         tab_data["left_tabview"] = left_tabview
+        tab_data["left_step_tab"] = step_tab
+        tab_data["left_code_tab"] = code_tab
+        tab_data["code_folder_rendered"] = False
 
         self.render_step_code_tab(tab_id, step_tab, prev_values)
-        self.render_code_folder_tab(tab_id, code_tab)
 
         try:
             left_tabview.set(selected_left_tab)
@@ -998,9 +1030,43 @@ class WorkspaceUIMixin:
         tab_data["suspend_gui_state_save"] = False
         self.schedule_gui_state_save(tab_id)
 
+        self.on_left_view_changed(tab_id)
         self.render_doc_panel(tab_id)
-        self.render_right_panel(tab_id)
-        self.render_resource_panel(tab_id)
+
+    def on_left_view_changed(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        left_tabview = tab_data.get("left_tabview")
+        if not left_tabview or not left_tabview.winfo_exists():
+            return
+        try:
+            selected = left_tabview.get()
+        except Exception:
+            selected = tab_data.get("left_tab_preferred", "步骤代码")
+        selected = _clean_text(selected) or "步骤代码"
+        if selected not in {"步骤代码", "代码文件夹"}:
+            selected = "步骤代码"
+        tab_data["left_tab_preferred"] = selected
+        
+        has_unhandled_error = tab_data.get("has_unhandled_error", False)
+        
+        if selected == "代码文件夹":
+            code_tab = tab_data.get("left_code_tab")
+            if code_tab and code_tab.winfo_exists():
+                # 如果有未处理的错误，或者尚未渲染过，则重新渲染代码文件夹标签页
+                if has_unhandled_error or not tab_data.get("code_folder_rendered", False):
+                    # 先清空现有内容
+                    for widget in code_tab.winfo_children():
+                        widget.destroy()
+                    self.render_code_folder_tab(tab_id, code_tab)
+                    tab_data["code_folder_rendered"] = True
+                    # 清除未处理错误标记
+                    if has_unhandled_error:
+                        tab_data["has_unhandled_error"] = False
+        
+        if not tab_data.get("suspend_gui_state_save"):
+            self.schedule_gui_state_save(tab_id)
 
     def get_step_run_history_stats(self, tab_id):
         tab_data = self.active_tabs_data.get(tab_id)
@@ -1164,6 +1230,16 @@ class WorkspaceUIMixin:
         run_ctrl_frame.pack(fill="x")
         run_ctrl_frame.grid_columnconfigure(0, weight=1, uniform="run_buttons")
         run_ctrl_frame.grid_columnconfigure(1, weight=1, uniform="run_buttons")
+        pause_hint_label = ctk.CTkLabel(
+            run_ctrl_frame,
+            text="",
+            height=18,
+            text_color=DANGER,
+            font=ui_font(10),
+            anchor="center",
+        )
+        pause_hint_label.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 2))
+        tab_data["pause_hint_label"] = pause_hint_label
         ctk.CTkButton(
             run_ctrl_frame,
             text="一键运行(所选)",
@@ -1172,18 +1248,18 @@ class WorkspaceUIMixin:
             font=ui_font(13, "bold"),
             command=lambda tid=tab_id: self.start_batch_run(tid),
             **button_success_style(),
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 4))
         pause_btn = ctk.CTkButton(
             run_ctrl_frame,
             text="暂停",
             height=HEIGHT_BUTTON_SM,
             corner_radius=RADIUS_LG,
             font=ui_font(13, "bold"),
-            command=lambda tid=tab_id: self.kill_process(tid),
+            command=lambda tid=tab_id: self.request_pause(tid),
             state="disabled",
             **button_danger_style(),
         )
-        pause_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        pause_btn.grid(row=1, column=1, sticky="ew", padx=(4, 0))
         tab_data["pause_button"] = pause_btn
 
         institution_txt_exists = self.has_institution_txt(manifest=manifest)
@@ -2667,6 +2743,15 @@ class WorkspaceUIMixin:
     def find_workspace_calc_result_folders(self, workspace_root):
         if not workspace_root or not os.path.isdir(workspace_root):
             return []
+        results = []
+
+        # 新版流程可将最终计算结果直接写到重要文件；两个目录名均兼容。
+        important_root = os.path.join(workspace_root, "重要文件")
+        for folder_name in ("结果", "计算结果"):
+            candidate = os.path.join(important_root, folder_name)
+            if os.path.isdir(candidate):
+                results.append(candidate)
+
         step_folders = []
         try:
             for name in os.listdir(workspace_root):
@@ -2684,7 +2769,6 @@ class WorkspaceUIMixin:
         if preferred_steps:
             step_folders = preferred_steps
 
-        results = []
         for step_root in step_folders:
             results.extend(self._iter_calc_result_folders_in_step(step_root, max_depth=2))
 
@@ -2728,7 +2812,7 @@ class WorkspaceUIMixin:
 
             for folder_path in sorted(root_folders):
                 folder_name = os.path.basename(folder_path)
-                group_name = "其他"
+                group_name = folder_name
                 if "周" in folder_name:
                     group_name = "周度"
                 elif "月" in folder_name:
@@ -2760,10 +2844,20 @@ class WorkspaceUIMixin:
             for file_path in {*(root_files or []), *[p for g in groups.values() for p in g.get("files", [])], *(panel_candidates or [])}:
                 latest_ts = max(latest_ts, self._get_path_mtime(file_path))
 
+            preferred_group_order = [name for name in ("周度", "月度") if name in groups]
+            dated_or_named_groups = sorted(
+                [name for name in groups if name not in {"周度", "月度", "根目录"}],
+                key=_natural_sort_key,
+                reverse=True,
+            )
+            group_order = preferred_group_order + dated_or_named_groups
+            if "根目录" in groups:
+                group_order.append("根目录")
+
             items.append(
                 {
                     "root": root,
-                    "groups": [(k, groups[k]) for k in ["周度", "月度", "根目录", "其他"] if k in groups],
+                    "groups": [(key, groups[key]) for key in group_order],
                     "panel_candidates": panel_candidates,
                     "_latest_ts": latest_ts,
                 }
@@ -2807,7 +2901,7 @@ class WorkspaceUIMixin:
 
         hint = ctk.CTkLabel(
             results_header,
-            text="搜索工作区内 `计算结果` 目录（优先在包含“计算”的 step 目录内），并按周度/月度分层展示。",
+            text="搜索任意 `step_n[_ ]计算` 下的 `计算结果`，以及 `重要文件/结果`、`重要文件/计算结果`，并按周度/月度分层展示。",
             text_color=TEXT_MUTED,
             font=ui_font(12),
         )
@@ -2847,7 +2941,7 @@ class WorkspaceUIMixin:
         if not folders:
             ctk.CTkLabel(
                 results_panel,
-                text="未找到 `计算结果` 目录。通常位于 `step_4 计算/计算结果` 或类似位置。",
+                text="未找到计算结果目录。可位于任意 `step_n[_ ]计算/计算结果`，或 `重要文件/结果`、`重要文件/计算结果`。",
                 text_color=TEXT_MUTED,
                 wraplength=WRAP_PANEL_MD,
                 justify="left",
@@ -3032,6 +3126,10 @@ class WorkspaceUIMixin:
         if right_panel:
             if last_rendered == "output":
                 tab_data["right_scroll_output"] = self.get_scroll_fraction(right_panel)
+            elif last_rendered == "processed":
+                tab_data["right_scroll_processed"] = self.get_scroll_fraction(right_panel)
+            elif last_rendered == "important":
+                tab_data["right_scroll_important"] = self.get_scroll_fraction(right_panel)
             elif last_rendered == "database":
                 tab_data["right_scroll_database"] = self.get_scroll_fraction(right_panel)
         tab_data["right_view"] = view_name
@@ -3066,8 +3164,13 @@ class WorkspaceUIMixin:
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
             return
-        if tab_data.get("right_view") == "database":
+        view_name = tab_data.get("right_view")
+        if view_name == "database":
             self.render_database_panel(tab_id)
+        elif view_name == "processed":
+            self.render_aux_folder_board(tab_id, "processed")
+        elif view_name == "important":
+            self.render_aux_folder_board(tab_id, "important")
         else:
             self.render_output_board(tab_id)
 
@@ -3075,12 +3178,145 @@ class WorkspaceUIMixin:
         tab_data = self.active_tabs_data.get(tab_id, {})
         switcher = ctk.CTkSegmentedButton(
             parent,
-            values=["数据文件", "数据库"],
-            command=lambda value, tid=tab_id: self.set_right_panel_view(tid, "database" if value == "数据库" else "output"),
+            values=["数据文件", "已处理", "重要文件", "数据库"],
+            command=lambda value, tid=tab_id: self.set_right_panel_view(
+                tid,
+                {"数据文件": "output", "已处理": "processed", "重要文件": "important", "数据库": "database"}.get(value, "output"),
+            ),
             **segmented_button_style(),
         )
         switcher.pack(fill="x", padx=10, pady=(0, 6))
-        switcher.set("数据库" if tab_data.get("right_view") == "database" else "数据文件")
+        switcher.set(
+            {"output": "数据文件", "processed": "已处理", "important": "重要文件", "database": "数据库"}.get(
+                tab_data.get("right_view"), "数据文件"
+            )
+        )
+
+    def get_aux_folder_root(self, manifest, view_name):
+        workspace_root = str((manifest or {}).get("workspace_root", "") or "").strip()
+        if not workspace_root:
+            return ""
+        if view_name == "important":
+            return os.path.join(workspace_root, "重要文件")
+        if view_name == "processed":
+            workspace_name = os.path.basename(os.path.normpath(workspace_root))
+            year_text = self.get_workspace_year(workspace_name)
+            if not year_text or year_text == "未识别":
+                return ""
+            return os.path.join(os.path.dirname(workspace_root), "已处理", str(year_text))
+        return ""
+
+    def get_aux_folder_items(self, root_path):
+        if not root_path or not os.path.isdir(root_path):
+            return []
+        items = []
+        for current_root, dirs, _files in os.walk(root_path):
+            dirs.sort(key=_natural_sort_key)
+            for folder_name in dirs:
+                folder_path = os.path.join(current_root, folder_name)
+                rel_path = os.path.relpath(folder_path, root_path)
+                try:
+                    n_items = len(os.listdir(folder_path))
+                except OSError:
+                    n_items = 0
+                items.append(
+                    {
+                        "name": folder_name,
+                        "path": folder_path,
+                        "rel_path": rel_path,
+                        "n_items": n_items,
+                        "depth": rel_path.count(os.sep),
+                    }
+                )
+        return items
+
+    def render_aux_folder_board(self, tab_id, view_name):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        manifest = tab_data.get("manifest", {})
+        right_panel = tab_data.get("right_panel")
+        right_header = tab_data.get("right_header")
+        if not right_panel or not right_header:
+            return
+
+        last_rendered = tab_data.get("right_panel_rendered_view")
+        if last_rendered in {"processed", "important"}:
+            tab_data[f"right_scroll_{last_rendered}"] = self.get_scroll_fraction(right_panel)
+        restore_scroll = tab_data.get(f"right_scroll_{view_name}", 0.0)
+
+        for widget in right_header.winfo_children():
+            widget.destroy()
+        for widget in right_panel.winfo_children():
+            widget.destroy()
+
+        title = "已处理文件区" if view_name == "processed" else "重要文件区"
+        root_path = self.get_aux_folder_root(manifest, view_name)
+        ctk.CTkLabel(right_header, text=title, text_color=TEXT_PRIMARY, font=ui_font(17, "bold")).pack(anchor="w", pady=(0, 2))
+        ctk.CTkLabel(
+            right_header,
+            text="按当前挂载工作区年份展示 `../已处理/{YR}` 下的全部文件夹。" if view_name == "processed" else "展示当前工作区 `重要文件` 下的全部文件夹。",
+            text_color=TEXT_MUTED,
+            font=ui_font(12),
+        ).pack(anchor="w", pady=(0, 4))
+        self.render_right_panel_switcher(right_header, tab_id)
+
+        action_frame = ctk.CTkFrame(right_header, fg_color="transparent")
+        action_frame.pack(fill="x", pady=(0, 6))
+        ctk.CTkButton(
+            action_frame,
+            text="打开根目录",
+            width=WIDTH_ACTION_BUTTON,
+            corner_radius=RADIUS_MD,
+            state="normal" if root_path and os.path.isdir(root_path) else "disabled",
+            command=lambda p=root_path: self.open_path(p),
+            **button_primary_style(),
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            action_frame,
+            text="刷新看板",
+            width=WIDTH_ACTION_BUTTON,
+            corner_radius=RADIUS_MD,
+            command=lambda tid=tab_id, view=view_name: self.render_aux_folder_board(tid, view),
+            **button_secondary_style(),
+        ).pack(side="left")
+
+        if not root_path or not os.path.isdir(root_path):
+            expected = root_path or ("../已处理/{YR}" if view_name == "processed" else "重要文件")
+            ctk.CTkLabel(
+                right_panel,
+                text=f"目录不存在或年份未识别：{expected}",
+                text_color=TEXT_MUTED,
+                wraplength=WRAP_PANEL_LG,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=(10, 0))
+            tab_data["right_panel_rendered_view"] = view_name
+            return
+
+        folder_items = self.get_aux_folder_items(root_path)
+        folder_card = ctk.CTkFrame(right_panel, **panel_card_style())
+        folder_card.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        ctk.CTkLabel(folder_card, text="文件夹目录", text_color=TEXT_PRIMARY, font=ui_font(15, "bold")).pack(anchor="w", padx=10, pady=(10, 6))
+        if not folder_items:
+            ctk.CTkLabel(folder_card, text="当前根目录下没有文件夹。", text_color=TEXT_MUTED).pack(anchor="w", padx=10, pady=(0, 10))
+        for item in folder_items:
+            row = ctk.CTkFrame(folder_card, **surface_card_style())
+            row.pack(fill="x", padx=(10 + min(item["depth"], 4) * 12, 10), pady=(0, 8))
+            ctk.CTkLabel(row, text=item["name"], anchor="w", text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(anchor="w", padx=8, pady=(8, 0))
+            ctk.CTkLabel(row, text=f"{item['rel_path'].replace(os.sep, ' / ')}  ·  {item['n_items']} 项", text_color=TEXT_MUTED, anchor="w", wraplength=WRAP_PANEL_LG, justify="left").pack(anchor="w", padx=8)
+            ctk.CTkButton(
+                row,
+                text="打开文件夹",
+                width=WIDTH_OPEN_FOLDER_BUTTON,
+                height=HEIGHT_BUTTON_XS,
+                corner_radius=RADIUS_SM,
+                command=lambda p=item["path"]: self.open_path(p),
+                **button_primary_style(),
+            ).pack(anchor="e", padx=8, pady=(4, 8))
+
+        tab_data["right_panel_rendered_view"] = view_name
+        self.safe_after_idle(self.set_scroll_fraction, self.active_tabs_data.get(tab_id, {}).get("right_panel"), restore_scroll)
+        self.store_right_panel_signature(tab_id)
 
     def get_output_folders(self, manifest, limit=12):
         configured_outputs = manifest.get("output_folders", [])
@@ -3178,16 +3414,35 @@ class WorkspaceUIMixin:
             )
         return folders
 
-    def get_database_path(self, manifest):
+    def get_database_files(self, manifest):
         workspace_root = str((manifest or {}).get("workspace_root", "") or "").strip()
         if not workspace_root:
-            return ""
+            return []
         workspace_name = os.path.basename(workspace_root)
         year_text = self.get_workspace_year(workspace_name)
         if not year_text or year_text == "未识别":
-            return ""
-        db_path = os.path.join(os.path.dirname(workspace_root), "数据库", str(year_text), "DB_PRIVATE.duckdb")
-        return db_path if os.path.isfile(db_path) else ""
+            return []
+        database_dir = os.path.join(os.path.dirname(workspace_root), "数据库", str(year_text))
+        if not os.path.isdir(database_dir):
+            return []
+        try:
+            return sorted(
+                [
+                    os.path.join(database_dir, name)
+                    for name in os.listdir(database_dir)
+                    if name.lower().endswith(".duckdb") and os.path.isfile(os.path.join(database_dir, name))
+                ],
+                key=lambda path: os.path.basename(path).lower(),
+            )
+        except OSError:
+            return []
+
+    def get_database_path(self, manifest, tab_data=None):
+        database_files = self.get_database_files(manifest)
+        selected = str((tab_data or {}).get("selected_database_path", "") or "").strip()
+        if selected and selected in database_files:
+            return selected
+        return database_files[0] if database_files else ""
 
     def get_database_tables(self, db_path, limit=16):
         if not duckdb or not db_path or not os.path.isfile(db_path):
@@ -3248,7 +3503,7 @@ class WorkspaceUIMixin:
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
             return
-        db_path = self.get_database_path(tab_data["manifest"])
+        db_path = self.get_database_path(tab_data["manifest"], tab_data)
         if not db_path:
             tab_data["db_result_title"] = title
             tab_data["db_result_text"] = "当前年份数据库缺失，待入库。"
@@ -3476,7 +3731,7 @@ class WorkspaceUIMixin:
         for widget in right_panel.winfo_children():
             widget.destroy()
 
-        # 数据库面板与输出面板保持同一套卡片体系，输入结果框样式来自 input_box_style。
+        # 数据库面板与输出面板保持同一套卡片体系。
         ctk.CTkLabel(right_header, text="数据库查询区", text_color=TEXT_PRIMARY, font=ui_font(17, "bold")).pack(anchor="w", pady=(0, 2))
         ctk.CTkLabel(right_header, text="轻量速查当前工作区 DuckDB 表和结果", text_color=TEXT_MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 4))
         self.render_right_panel_switcher(right_header, tab_id)
@@ -3492,7 +3747,9 @@ class WorkspaceUIMixin:
             command=lambda tid=tab_id, v=auto_var: self.set_auto_refresh_enabled(tid, v.get()),
         ).pack(side="right")
 
-        db_path = self.get_database_path(manifest)
+        db_path = self.get_database_path(manifest, tab_data)
+        if db_path:
+            tab_data["selected_database_path"] = db_path
         db_card = ctk.CTkFrame(right_panel, **panel_card_style())
         db_card.pack(fill="x", padx=10, pady=(0, 10))
         ctk.CTkLabel(db_card, text="当前数据库", text_color=TEXT_PRIMARY, font=ui_font(15, "bold")).pack(anchor="w", padx=10, pady=(10, 6))
@@ -3518,9 +3775,10 @@ class WorkspaceUIMixin:
                 **button_secondary_style(),
             ).pack(side="left")
         else:
-            hint = "当前年份数据库缺失，待入库。"
+            hint = "当前年份目录中未发现 `.duckdb` 数据库。"
             if workspace_year and workspace_year != "未识别":
-                hint = f"未找到 {workspace_year} 年数据库，当前状态：缺失待入库。"
+                expected_dir = os.path.join(os.path.dirname(manifest.get("workspace_root", "")), "数据库", str(workspace_year))
+                hint = f"未在以下位置发现数据库：{expected_dir}/*.duckdb"
             ctk.CTkLabel(db_card, text=hint, text_color=DANGER, wraplength=WRAP_PANEL_MD, justify="left").pack(anchor="w", padx=10, pady=(0, 10))
 
         table_card = ctk.CTkFrame(right_panel, **panel_card_style())
@@ -3609,8 +3867,15 @@ class WorkspaceUIMixin:
         view = tab_data.get("right_view", "output")
         if view == "database":
             # 数据库面板由用户查询驱动，自动刷新不应重建(否则会清空查询结果与滚动)。
-            db_path = self.get_database_path(manifest) or ""
-            return self._stable_signature(["database", db_path])
+            db_path = self.get_database_path(manifest, tab_data) or ""
+            database_files = self.get_database_files(manifest)
+            return self._stable_signature(["database", db_path, *database_files])
+        if view in {"processed", "important"}:
+            root_path = self.get_aux_folder_root(manifest, view)
+            parts = [view, root_path]
+            for item in self.get_aux_folder_items(root_path):
+                parts.append("folder|%s|%s" % (item.get("rel_path"), item.get("n_items")))
+            return self._stable_signature(parts)
         parts = [
             "output",
             tab_data.get("output_marker_filter", ""),

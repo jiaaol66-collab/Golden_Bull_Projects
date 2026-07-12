@@ -630,6 +630,8 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._detail_action_btn = None
         self._active_detail_apply = None
         self._confirm_popup = None
+        self._loading_overlay = None
+        self._loading_label = None
 
         self.title(f"文件结构（树状视图） · {workspace_name or award_name}")
         self.geometry("1080x680")
@@ -666,6 +668,33 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.log_text.insert("end", f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
         self.log_text.see("end")
         self.log_text.config(state="disabled")
+
+    def _show_loading_overlay(self, message="正在保存..."):
+        if self._loading_overlay:
+            return
+        # 创建半透明遮罩背景
+        self._loading_overlay = tk.Frame(self, bg="gray50", bd=0)
+        self._loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        # 创建带消息的容器
+        content_frame = tk.Frame(self._loading_overlay, bg=PALETTE["surface"], bd=2, relief="solid")
+        content_frame.place(relx=0.5, rely=0.5, anchor="center")
+        self._loading_label = tk.Label(
+            content_frame,
+            text=message,
+            bg=PALETTE["surface"],
+            fg=PALETTE["text"],
+            font=(FONT, 14, "bold"),
+            padx=40,
+            pady=30
+        )
+        self._loading_label.pack()
+        self.update_idletasks()
+
+    def _hide_loading_overlay(self):
+        if self._loading_overlay:
+            self._loading_overlay.destroy()
+            self._loading_overlay = None
+            self._loading_label = None
 
     def _on_tab_changed(self, event):
         selected_tab = event.widget.select()
@@ -3357,6 +3386,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         return "\n".join(combined_output.splitlines()[-tail_lines:])
 
     def _finish_post_save_sequence(self, post_save_info, result_info):
+        self._hide_loading_overlay()
         if callable(self.on_saved):
             try:
                 self.on_saved(self.blueprint_xlsx_path)
@@ -3481,6 +3511,8 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.dirty = False
         self.status_var.set(f"保存成功，已写回 {self.blueprint_xlsx_path}")
         self._log(f"保存成功，已将更新写入 Excel，物理行原位更新，新行已追加至末尾。")
+        # 显示加载遮罩
+        self._show_loading_overlay("正在保存...")
         self._run_post_save_sequence()
 
     def open_xlsx_file(self):

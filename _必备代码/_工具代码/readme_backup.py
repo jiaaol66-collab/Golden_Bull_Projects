@@ -130,6 +130,11 @@ else:
 
 timing = f'备份时间_{time_str}'
 timing = timing.replace(':','-')
+file = [f for f in os.listdir(path_t) if '备份' in f]
+print(file)
+for f in file:
+    delete_file(os.path.join(path_t, f))
+    
 create_empty_file(path_t+f'/{timing}')
 create_empty_file(path_t+'/备注.txt')
 open_file(get_path(1,path_t)['n'])

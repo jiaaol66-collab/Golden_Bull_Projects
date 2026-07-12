@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import runpy
 import sys
@@ -100,10 +100,21 @@ def _run_notebook(notebook_path, extra_args):
     import nbformat
     from nbclient import NotebookClient
 
+    class StreamingNotebookClient(NotebookClient):
+        def process_message(self, msg, cell, cell_index):
+            output = super().process_message(msg, cell, cell_index)
+            if output is not None:
+                _emit_notebook_output(output)
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+            return output
+
     notebook = nbformat.read(notebook_path, as_version=4)
     kernel_name = str((((notebook.metadata or {}).get("kernelspec") or {}).get("name")) or "").strip() or None
     resources = {"metadata": {"path": os.path.dirname(notebook_path) or os.getcwd()}}
-    client = NotebookClient(
+    client = StreamingNotebookClient(
         notebook,
         timeout=None,
         allow_errors=False,
@@ -116,13 +127,14 @@ def _run_notebook(notebook_path, extra_args):
 
     original_argv = list(sys.argv)
     try:
+        sys.stdout.write(f"[Notebook] 启动全新 kernel 后运行: {notebook_path}\n")
+        sys.stdout.flush()
         sys.argv = [notebook_path] + list(extra_args or [])
         with client.setup_kernel():
             for index, cell in enumerate(notebook.cells):
                 if str((cell or {}).get("cell_type") or "") != "code":
                     continue
                 client.execute_cell(cell, index)
-                _emit_notebook_cell_outputs(cell)
     finally:
         sys.argv = original_argv
 
@@ -171,3 +183,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

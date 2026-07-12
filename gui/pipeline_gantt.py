@@ -1276,6 +1276,93 @@ class PipelineGanttMixin:
                 ).pack(anchor="w", padx=10, pady=(0, 4))
         ctk.CTkLabel(detail_card, text="", text_color=TEXT_MUTED).pack(anchor="w", padx=10, pady=(0, 6))
 
+    def select_attempt_menu_value(self, tab_id, value):
+        if _clean_text(value) == "...":
+            self.open_attempt_picker(tab_id, self.active_tabs_data.get(tab_id, {}).get("attempt_menu_button"))
+            return
+        self.set_selected_attempt(tab_id, value)
+    def close_attempt_picker(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        picker = (tab_data or {}).get("attempt_picker_window")
+        if picker and picker.winfo_exists():
+            try:
+                picker.destroy()
+            except Exception:
+                pass
+        if tab_data is not None:
+            tab_data["attempt_picker_window"] = None
+
+    def open_attempt_picker(self, tab_id, anchor_widget):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        _, selector_scope, attempt_values, _selected_session_id, selected_label = self.get_attempt_selector_state(tab_id, tab_data.get("manifest", {}))
+        if not attempt_values:
+            return
+        self.close_attempt_picker(tab_id)
+
+        picker = ctk.CTkToplevel(self)
+        picker.withdraw()
+        picker.title("选择尝试")
+        picker.resizable(False, False)
+        picker.configure(fg_color=SURFACE_BG)
+        picker.transient(self)
+        tab_data["attempt_picker_window"] = picker
+
+        width = WIDTH_ATTEMPT_MENU
+        height = 340
+        try:
+            x = anchor_widget.winfo_rootx()
+            y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 4
+        except Exception:
+            x = self.winfo_rootx() + 120
+            y = self.winfo_rooty() + 120
+        picker.geometry(f"{width}x{height}+{x}+{y}")
+
+        header = ctk.CTkFrame(picker, fg_color="transparent")
+        header.pack(fill="x", padx=8, pady=(8, 4))
+        title = "未归档尝试" if selector_scope == "unarchived" else "已归档尝试"
+        ctk.CTkLabel(header, text=title, text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(side="left")
+        ctk.CTkButton(
+            header,
+            text="关闭",
+            width=52,
+            height=HEIGHT_BUTTON_XS,
+            corner_radius=RADIUS_SM,
+            command=lambda tid=tab_id: self.close_attempt_picker(tid),
+            **button_secondary_style(),
+        ).pack(side="right")
+
+        scroll = ctk.CTkScrollableFrame(
+            picker,
+            width=width - 16,
+            height=height - 54,
+            corner_radius=RADIUS_SM,
+            fg_color=SURFACE_BG,
+        )
+        scroll.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        for value in attempt_values:
+            is_selected = _clean_text(value) == _clean_text(selected_label)
+            btn_style = button_primary_style() if is_selected else button_secondary_style()
+            ctk.CTkButton(
+                scroll,
+                text=value,
+                anchor="w",
+                height=30,
+                corner_radius=RADIUS_SM,
+                command=lambda v=value, tid=tab_id: (self.close_attempt_picker(tid), self.set_selected_attempt(tid, v)),
+                **btn_style,
+            ).pack(fill="x", padx=2, pady=2)
+
+        picker.bind("<Escape>", lambda _event, tid=tab_id: self.close_attempt_picker(tid))
+        picker.protocol("WM_DELETE_WINDOW", lambda tid=tab_id: self.close_attempt_picker(tid))
+        try:
+            picker.deiconify()
+            picker.lift()
+            picker.focus_force()
+        except Exception:
+            pass
     def set_selected_attempt(self, tab_id, selected_label):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
@@ -1395,9 +1482,12 @@ class PipelineGanttMixin:
         ctk.CTkLabel(attempt_select_row, text="尝试", text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(side="left", padx=(0, 8))
         empty_text = "暂无未归档记录" if selector_scope == "unarchived" else "暂无已归档记录"
         if attempt_values:
+            compact_attempt_values = list(attempt_values[:5])
+            if len(attempt_values) > 5:
+                compact_attempt_values.append("...")
             attempt_menu = ctk.CTkOptionMenu(
                 attempt_select_row,
-                values=attempt_values,
+                values=compact_attempt_values,
                 width=WIDTH_ATTEMPT_MENU,
                 height=HEIGHT_BUTTON_SM,
                 corner_radius=RADIUS_MD,
@@ -1408,15 +1498,17 @@ class PipelineGanttMixin:
                 dropdown_fg_color=SURFACE_BG,
                 dropdown_hover_color=ITEM_HOVER,
                 dropdown_text_color=TEXT_PRIMARY,
-                command=lambda value, tid=tab_id: self.set_selected_attempt(tid, value),
+                command=lambda value, tid=tab_id: self.select_attempt_menu_value(tid, value),
             )
             attempt_menu.pack(side="left")
+            tab_data["attempt_menu_button"] = attempt_menu
             if selected_label:
                 try:
                     attempt_menu.set(selected_label)
                 except Exception:
                     pass
         else:
+            tab_data["attempt_menu_button"] = None
             ctk.CTkLabel(attempt_select_row, text=empty_text, text_color=TEXT_MUTED).pack(side="left")
         attempt_dir = ""
         if selected_session_id and not is_unarchived_selected:

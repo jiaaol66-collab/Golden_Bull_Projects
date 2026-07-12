@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import shutil
@@ -169,8 +169,9 @@ def resolve_writable_db_path(
         ) from exc
 
 
-def _log_db_path(db_path: Path, log: bool, log_prefix: str):
-    if log and str(db_path) not in _LOGGED_DB_PATHS:
+def _log_db_path(db_path: Path, log: bool, log_prefix: str, env_prefix=None):
+    show_path = log or _truthy_env(env_prefix, "DB_PRINT_PATH", True, fallback_key="DUCKDB_PRINT_PATH")
+    if show_path and str(db_path) not in _LOGGED_DB_PATHS:
         print(f"{log_prefix} 使用数据库: {db_path}")
         _LOGGED_DB_PATHS.add(str(db_path))
 
@@ -268,7 +269,7 @@ def query_duckdb(
     if log is None:
         log = _truthy_env(env_prefix, "DB_LOG", True, fallback_key="DUCKDB_LOG")
 
-    _log_db_path(db_path, log, log_prefix)
+    _log_db_path(db_path, log, log_prefix, env_prefix=env_prefix)
     con = _connect_with_retry(duckdb, db_path, read_only=True, log=log, env_prefix=env_prefix, log_prefix=log_prefix)
     try:
         if log:
@@ -324,7 +325,7 @@ def execute_duckdb(
     if log is None:
         log = _truthy_env(env_prefix, "DB_LOG", True, fallback_key="DUCKDB_LOG")
 
-    _log_db_path(db_path, log, log_prefix)
+    _log_db_path(db_path, log, log_prefix, env_prefix=env_prefix)
     con = _connect_with_retry(duckdb, db_path, read_only=False, log=log, env_prefix=env_prefix, log_prefix=log_prefix)
     try:
         if log:
@@ -408,7 +409,7 @@ def write_duckdb_table(
     if log is None:
         log = _truthy_env(env_prefix, "DB_LOG", True, fallback_key="DUCKDB_LOG")
 
-    _log_db_path(db_path, log, log_prefix)
+    _log_db_path(db_path, log, log_prefix, env_prefix=env_prefix)
     parts = str(table_name).split(".")
     schema_name = parts[0] if len(parts) == 2 else "main"
     quoted_table = _quote_table_name(table_name)
@@ -547,4 +548,5 @@ def duckdb_table_exists(
     if df.empty:
         return False
     return int(df.iloc[0, 0]) > 0
+
 

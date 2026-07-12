@@ -1,0 +1,4 @@
+interface:
+  display_name: "金牛奖步骤说明维护"
+  short_description: "按现行代码编写紧凑操作手册式金牛奖步骤说明并审核"
+  default_prompt: "Use $write-golden-bull-step-docs to update and audit this Golden Bull Award workspace's step DOCX files as compact operator guides derived from the current code."

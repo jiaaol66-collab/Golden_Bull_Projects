@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import os
 import sys
 import subprocess
@@ -601,6 +601,13 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.window_resizing_clear_job = None
         self.console_resize_active_tab = None
         self.auto_refresh_interval_ms = 4000
+        self.runtime_ui_flush_interval_ms = 40
+        self._pid_alive_cache = {}
+        self._pid_alive_cache_ttl = 1.2
+        self._pid_alive_cache_last_cleanup = 0.0
+        self._ui_queue_lock = threading.Lock()
+        self.log_ui_scroll_pause_ms = 260
+        self.log_auto_follow_state_debounce_ms = 80
         self.tab_hover_close_button = None
         self.tab_hover_close_target = None
         self.tab_hover_hide_job = None
@@ -2304,7 +2311,16 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         height = window_height or self.winfo_height()
         if height <= 1:
             height = 780
-        return max(CONSOLE_MIN_HEIGHT, int(height * 0.5))
+        return max(CONSOLE_MIN_HEIGHT, int(height * 0.55))
+
+    def get_default_console_height_for_tab(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        main_view = tab_data.get("main_view") if tab_data else None
+        if main_view and main_view.winfo_exists():
+            height = main_view.winfo_height()
+            if height > 1:
+                return max(CONSOLE_MIN_HEIGHT, int(height * 0.55))
+        return self.get_default_console_height()
 
     def update_sidebar_width(self, width):
         self.sidebar_expanded_width = width
@@ -2369,22 +2385,26 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if total_height <= 1:
             self.safe_after(80, self.apply_console_height, tab_id, target_height, remember)
             return
-        min_console = CONSOLE_MIN_HEIGHT
-        max_console = max(min_console, total_height - CONSOLE_DEFAULT_LG)
-        if max_console <= min_console:
-            return
-        desired_console = target_height if target_height is not None else tab_data.get("console_height", self.get_default_console_height())
-        desired_console = max(min_console, min(desired_console, max_console))
-        console_container.configure(height=desired_console)
-        console_container.pack_propagate(False)
         sash_height = HEIGHT_SASH
         if console_sash and console_sash.winfo_exists():
             try:
                 sash_height = max(HEIGHT_SASH, console_sash.winfo_height())
             except Exception:
                 sash_height = HEIGHT_SASH
+        min_console = CONSOLE_MIN_HEIGHT
+        min_content = max(120, min(CONSOLE_DEFAULT_MD, int(total_height * 0.16)))
+        max_console = max(min_console, total_height - min_content - sash_height - 10)
+        if max_console <= min_console:
+            return
+        default_console = self.get_default_console_height_for_tab(tab_id)
+        desired_console = target_height if target_height is not None else tab_data.get("console_height", default_console)
+        if target_height is None and not tab_data.get("console_user_locked"):
+            desired_console = default_console
+        desired_console = max(min_console, min(desired_console, max_console))
+        console_container.configure(height=desired_console)
+        console_container.pack_propagate(False)
         if content_container and content_container.winfo_exists():
-            content_height = max(150, total_height - desired_console - sash_height - 10)
+            content_height = max(min_content, total_height - desired_console - sash_height - 10)
             content_container.configure(height=content_height)
         if remember:
             tab_data["console_height"] = desired_console
@@ -2430,8 +2450,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if not self.sidebar_collapsed:
             self.update_sidebar_width(WIDTH_SIDEBAR_NARROW if width < 1150 else WIDTH_SIDEBAR_WIDE)
         progress_wrap = max(240, self.main_area.winfo_width() - 80)
-        default_console_height = self.get_default_console_height()
         for tab_id, tab_data in self.active_tabs_data.items():
+            default_console_height = self.get_default_console_height_for_tab(tab_id)
             progress_label = tab_data.get("progress_label")
             if progress_label and progress_label.winfo_exists():
                 progress_label.configure(wraplength=progress_wrap, justify="left")
@@ -2728,7 +2748,18 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         award_root = self.get_sidebar_award_root(award_name)
         if not award_root or not year_value:
             return ""
-        return os.path.join(award_root, "数据库", str(year_value), "DB_PRIVATE.duckdb")
+        database_dir = os.path.join(award_root, "数据库", str(year_value))
+        if not os.path.isdir(database_dir):
+            return ""
+        try:
+            database_files = [
+                os.path.join(database_dir, name)
+                for name in os.listdir(database_dir)
+                if name.lower().endswith(".duckdb") and os.path.isfile(os.path.join(database_dir, name))
+            ]
+        except OSError:
+            return ""
+        return sorted(database_files, key=lambda path: os.path.basename(path).lower())[0] if database_files else ""
 
     def get_award_data_ingestion_script_path(self, award_name):
         award_root = self.get_sidebar_award_root(award_name)
@@ -2836,11 +2867,14 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if not selected_src:
             return
         db_path = self.get_award_year_database_path(award_name, year_value)
+        award_root = self.get_sidebar_award_root(award_name)
+        db_target = db_path or os.path.join(award_root, "数据库", str(year_value), "*.duckdb")
         preview = (
             f"奖项: {award_name}\n"
             f"年份: {year_value}\n"
-            f"目标数据库: {db_path}\n"
+            f"目标数据库: {db_target}\n"
             f"源文件: {selected_src}\n\n"
+            "数据库文件名由入库脚本和当前奖项配置决定。\n\n"
             "确认开始入库吗？"
         )
         confirmed = custom_dialog("确认开始数据入库", preview, "confirm", "开始入库", "取消")
@@ -2955,6 +2989,9 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 "log_box": None,
                 "progress_label": None,
                 "pause_button": None,
+                "pause_hint_label": None,
+                "pause_click_count": 0,
+                "pause_reset_job": None,
                 "run_timer_label": None,
                 "workspace_view_tabview": None,
                 "main_view": None,
@@ -2982,6 +3019,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 "tab_breath_on": False,
                 "current_process": None,
                 "current_run_info": None,
+                "process_registry": {},
+                "main_run_id": "",
                 "current_step_id": None,
                 "progress_active": False,
                 "batch_has_started_steps": False,
@@ -3257,7 +3296,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             tab_data["left_tab_preferred"] = left_tab
 
         right_view = _clean(state.get("right_view"))
-        if right_view in {"output", "database"}:
+        if right_view in {"output", "processed", "important", "database"}:
             tab_data["right_view"] = right_view
 
         tab_data["attempt_selected_session_id"] = _clean(state.get("attempt_selected_session_id"))
@@ -3326,7 +3365,9 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             "run_timer_failed": bool(tab_data.get("run_timer_failed")),
             "workspace_view_preferred": workspace_view,
             "left_tab_preferred": left_tab,
-            "right_view": "database" if tab_data.get("right_view") == "database" else "output",
+            "right_view": tab_data.get("right_view")
+            if tab_data.get("right_view") in {"output", "processed", "important", "database"}
+            else "output",
             "attempt_selected_session_id": _clean(tab_data.get("attempt_selected_session_id")),
             "attempt_selector_scope": _clean(tab_data.get("attempt_selector_scope")) or "archived",
             "error_folder_rel_path": _clean(tab_data.get("error_folder_rel_path")),
@@ -3682,6 +3723,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if not selected_orders:
             self.log_msg(tab_id, "当前没有勾选可执行的顺序步骤代码。")
             return
+        if not self.validate_batch_step_orders(tab_id, selected_orders):
+            return
         self.clear_error_focus(tab_id)
         tab_data["batch_has_started_steps"] = False
         tab_data["main_batch_finished"] = False
@@ -3696,7 +3739,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         tab_data = self.active_tabs_data[tab_id]
         manifest = tab_data["manifest"]
         
-        for step in manifest["steps"]:
+        for step in self.get_ordered_manifest_steps(manifest):
             step_id = step["order"]
             if tab_data["step_vars"][step_id].get() == "1" and tab_data["step_states"][step_id] == "pending":
                 tab_data["step_states"][step_id] = "running"
@@ -3813,19 +3856,56 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             return False
         if pid <= 0:
             return False
+        now = time.monotonic()
+        cached = self._pid_alive_cache.get(pid)
+        if cached and (now - float(cached[1])) <= float(self._pid_alive_cache_ttl):
+            return bool(cached[0])
+        if os.name == "nt":
+            try:
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+                output = (result.stdout or "").strip()
+                alive = bool(output and "INFO:" not in output.upper() and str(pid) in output)
+                self._pid_alive_cache[pid] = (alive, now)
+                if (now - float(self._pid_alive_cache_last_cleanup)) >= float(self._pid_alive_cache_ttl) * 5:
+                    self._pid_alive_cache_last_cleanup = now
+                    stale_before = now - float(self._pid_alive_cache_ttl) * 10
+                    for k, v in list(self._pid_alive_cache.items()):
+                        try:
+                            if float(v[1]) < stale_before:
+                                self._pid_alive_cache.pop(k, None)
+                        except Exception:
+                            self._pid_alive_cache.pop(k, None)
+                return alive
+            except Exception:
+                return False
         try:
             os.kill(pid, 0)
         except OSError:
             return False
         except Exception:
             return False
+        self._pid_alive_cache[pid] = (True, now)
         return True
 
     def get_live_async_pids(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if tab_data:
+            now = time.monotonic()
+            last_ts = float(tab_data.get("_live_async_pids_checked_at", 0.0) or 0.0)
+            cached = tab_data.get("_live_async_pids_cached")
+            if cached is not None and (now - last_ts) <= float(self._pid_alive_cache_ttl):
+                return list(cached)
         raw_pids = self.get_async_pids(tab_id)
         live_pids = [pid for pid in raw_pids if self.is_pid_running(pid)]
         if len(live_pids) != len(raw_pids):
-            tab_data = self.active_tabs_data.get(tab_id)
             pid_file = (tab_data or {}).get("async_pid_file")
             if pid_file:
                 try:
@@ -3836,6 +3916,9 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                             f.write("")
                 except Exception:
                     pass
+        if tab_data is not None:
+            tab_data["_live_async_pids_checked_at"] = time.monotonic()
+            tab_data["_live_async_pids_cached"] = list(live_pids)
         return live_pids
 
     def has_async_processes(self, tab_id):
@@ -3918,8 +4001,62 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if not tab_data:
             return
         pause_button = tab_data.get("pause_button")
+        pause_hint_label = tab_data.get("pause_hint_label")
         if pause_button and pause_button.winfo_exists():
-            pause_button.configure(state="normal" if enabled else "disabled")
+            if not enabled:
+                self.cancel_after_handle(tab_data.get("pause_reset_job"))
+                tab_data["pause_reset_job"] = None
+                tab_data["pause_click_count"] = 0
+                pause_button.configure(text="暂停", state="disabled")
+                if pause_hint_label and pause_hint_label.winfo_exists():
+                    pause_hint_label.configure(text="")
+            else:
+                pause_button.configure(state="normal")
+
+    def reset_pause_confirmation(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        tab_data["pause_reset_job"] = None
+        tab_data["pause_click_count"] = 0
+        pause_hint_label = tab_data.get("pause_hint_label")
+        if pause_hint_label and pause_hint_label.winfo_exists():
+            pause_hint_label.configure(text="")
+
+    def request_pause(self, tab_id):
+        """连续点击三次后才执行暂停，降低运行中误触的风险。"""
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        if not (self.is_main_process_running(tab_id) or self.has_async_processes(tab_id)):
+            self.cancel_after_handle(tab_data.get("pause_reset_job"))
+            tab_data["pause_reset_job"] = None
+            tab_data["pause_click_count"] = 0
+            self.set_pause_button_state(tab_id, False)
+            return
+
+        click_count = int(tab_data.get("pause_click_count", 0) or 0) + 1
+        if click_count < 3:
+            self.cancel_after_handle(tab_data.get("pause_reset_job"))
+            tab_data["pause_click_count"] = click_count
+            remaining = 3 - click_count
+            pause_hint_label = tab_data.get("pause_hint_label")
+            if pause_hint_label and pause_hint_label.winfo_exists():
+                pause_hint_label.configure(text=f"再点击{remaining}下停止运行")
+            self.log_msg(tab_id, f"暂停确认 {click_count}/3：再点击 {remaining} 次才会暂停。")
+            tab_data["pause_reset_job"] = self.safe_after(3000, self.reset_pause_confirmation, tab_id)
+            return
+
+        self.cancel_after_handle(tab_data.get("pause_reset_job"))
+        tab_data["pause_reset_job"] = None
+        tab_data["pause_click_count"] = 0
+        pause_hint_label = tab_data.get("pause_hint_label")
+        if pause_hint_label and pause_hint_label.winfo_exists():
+            pause_hint_label.configure(text="")
+        pause_button = tab_data.get("pause_button")
+        if pause_button and pause_button.winfo_exists():
+            pause_button.configure(text="暂停")
+        self.kill_process(tab_id)
 
     def reset_run_timer_display(self, tab_id):
         tab_data = self.active_tabs_data.get(tab_id)
@@ -3956,6 +4093,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
 
         tab_data["current_process"] = None
         tab_data["current_run_info"] = None
+        tab_data["process_registry"] = {}
+        tab_data["main_run_id"] = ""
         tab_data["current_step_id"] = None
         tab_data["progress_active"] = False
         tab_data["batch_has_started_steps"] = False
@@ -3968,6 +4107,78 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.refresh_tab_panels(tab_id)
         self.schedule_gui_state_save(tab_id)
         return selected_orders
+
+    def get_ordered_manifest_steps(self, manifest):
+        steps = list((manifest or {}).get("steps", []))
+        return sorted(
+            steps,
+            key=lambda step: (
+                step.get("order") is None,
+                step.get("order") if isinstance(step.get("order"), int) else 999999,
+                _natural_sort_key(step.get("display_label", step.get("script_name", ""))),
+            ),
+        )
+
+    def find_duplicate_step_orders(self, manifest):
+        seen = {}
+        duplicates = {}
+        for step in (manifest or {}).get("steps", []):
+            order = step.get("order")
+            if order is None:
+                continue
+            label = step.get("display_label", step.get("script_name", str(order)))
+            if order in seen:
+                duplicates.setdefault(order, [seen[order]]).append(label)
+            else:
+                seen[order] = label
+        return duplicates
+
+    def validate_batch_step_orders(self, tab_id, selected_orders):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return False
+        duplicates = self.find_duplicate_step_orders(tab_data.get("manifest", {}))
+        selected_duplicate_orders = [order for order in duplicates if order in selected_orders]
+        if not selected_duplicate_orders:
+            return True
+        detail_lines = []
+        for order in sorted(selected_duplicate_orders):
+            detail_lines.append(f"运行顺序 {order}: " + " / ".join(duplicates.get(order, [])))
+        self.log_msg(tab_id, "检测到重复的运行顺序，已取消本次调度：\n" + "\n".join(detail_lines))
+        return False
+
+    def make_run_id(self, step_info):
+        label = step_info.get("display_label", step_info.get("script_name", "run"))
+        safe_label = re.sub(r'[\\/:*?"<>|\s]+', "_", str(label)).strip("_") or "run"
+        return f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{safe_label}_{uuid.uuid4().hex[:6]}"
+
+    def register_process(self, tab_id, run_id, process, step_info):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        registry = tab_data.setdefault("process_registry", {})
+        registry[run_id] = {
+            "process": process,
+            "step_info": dict(step_info or {}),
+            "pid": process.pid,
+            "started_at": time.time(),
+        }
+        tab_data["current_process"] = process
+        if not step_info.get("is_manual_code") and not step_info.get("is_post_batch_update"):
+            tab_data["main_run_id"] = run_id
+
+    def unregister_process(self, tab_id, run_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        registry = tab_data.setdefault("process_registry", {})
+        registry.pop(run_id, None)
+        if tab_data.get("main_run_id") == run_id:
+            tab_data["main_run_id"] = ""
+        current = tab_data.get("current_process")
+        if current and all(item.get("process") is not current for item in registry.values()):
+            remaining = next(iter(registry.values()), {})
+            tab_data["current_process"] = remaining.get("process")
 
     def format_elapsed_time(self, elapsed_seconds):
         total_seconds = max(0, int(elapsed_seconds))
@@ -4020,6 +4231,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         tab_data["error_folder_rel_path"] = ""
         tab_data["error_file_rel_path"] = ""
         tab_data["error_is_root"] = False
+        tab_data["has_unhandled_error"] = False
         self.schedule_gui_state_save(tab_id)
 
     def set_error_focus(self, tab_id, step_info):
@@ -4032,13 +4244,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         tab_data["error_folder_rel_path"] = folder_rel_path
         tab_data["error_file_rel_path"] = rel_path
         tab_data["error_is_root"] = bool(is_root_code or not folder_rel_path)
-        tab_data["left_tab_preferred"] = "代码文件夹"
-        left_tabview = tab_data.get("left_tabview")
-        if left_tabview and left_tabview.winfo_exists():
-            try:
-                left_tabview.set("代码文件夹")
-            except Exception:
-                pass
+        # 不再自动切换标签页，而是标记有未处理的错误
+        tab_data["has_unhandled_error"] = True
         self.schedule_gui_state_save(tab_id)
 
     def fail_current_chain(self, tab_id, step_info, message="", affect_timer=True):
@@ -4048,6 +4255,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.update_attempt_error_snapshot(tab_id)
         tab_data["current_process"] = None
         tab_data["current_run_info"] = None
+        tab_data["process_registry"] = {}
+        tab_data["main_run_id"] = ""
         tab_data["current_step_id"] = None
         tab_data["main_batch_finished"] = True
         tab_data["post_batch_update_done"] = True
@@ -4207,8 +4416,29 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.cancel_log_auto_follow_resume(tab_id)
         tab_data["log_auto_follow_resume_job"] = self.safe_after(LOG_AUTO_FOLLOW_IDLE_MS, self.resume_log_auto_follow, tab_id)
 
+    def schedule_log_auto_follow_state(self, tab_id, delay_ms=None):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        delay_ms = int(delay_ms if delay_ms is not None else int(getattr(self, "log_auto_follow_state_debounce_ms", 80) or 80))
+        job = tab_data.get("_log_auto_follow_state_job")
+        if job:
+            self.cancel_after_handle(job)
+        tab_data["_log_auto_follow_state_job"] = self.safe_after(delay_ms, self._apply_scheduled_log_auto_follow_state, tab_id)
+
+    def _apply_scheduled_log_auto_follow_state(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        tab_data["_log_auto_follow_state_job"] = None
+        self.update_log_auto_follow_state(tab_id)
+
     def on_log_box_user_interaction(self, tab_id, _event=None):
-        self.safe_after(0, self.update_log_auto_follow_state, tab_id)
+        tab_data = self.active_tabs_data.get(tab_id)
+        if tab_data:
+            pause_ms = float(getattr(self, "log_ui_scroll_pause_ms", 260) or 260)
+            tab_data["_log_user_scrolling_until"] = time.monotonic() + max(0.05, pause_ms / 1000.0)
+        self.schedule_log_auto_follow_state(tab_id)
         return None
 
     def bind_log_box_auto_follow(self, tab_id, log_box):
@@ -4243,7 +4473,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 y_scrollbar.configure(
                     command=lambda *args, tid=tab_id, tb=text_widget: (
                         tb.yview(*args) if tb is not None else None,
-                        self.safe_after(0, self.update_log_auto_follow_state, tid),
+                        self.on_log_box_user_interaction(tid, None),
                     )[0]
                 )
             except Exception:
@@ -4265,6 +4495,80 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             log_box.insert("end", f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}\n")
         else:
             log_box.insert("end", f"{msg}\n")
+        if tab_data.get("log_auto_follow_enabled", True):
+            log_box.see("end")
+        log_box.configure(state="disabled")
+        tab_data["progress_active"] = False
+
+    def queue_runtime_progress(self, tab_id, msg):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        with self._ui_queue_lock:
+            tab_data["_queued_progress"] = msg
+        self._schedule_runtime_ui_flush(tab_id)
+
+    def queue_runtime_log(self, tab_id, line):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        with self._ui_queue_lock:
+            pending = tab_data.get("_queued_logs")
+            if not isinstance(pending, list):
+                pending = []
+                tab_data["_queued_logs"] = pending
+            pending.append(line)
+        self._schedule_runtime_ui_flush(tab_id)
+
+    def _schedule_runtime_ui_flush(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        if tab_data.get("_runtime_ui_flush_job"):
+            return
+        delay_ms = int(max(10, float(getattr(self, "runtime_ui_flush_interval_ms", 40) or 40)))
+        tab_data["_runtime_ui_flush_job"] = self.safe_after(delay_ms, self._flush_runtime_ui, tab_id)
+
+    def _flush_runtime_ui(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        tab_data["_runtime_ui_flush_job"] = None
+        with self._ui_queue_lock:
+            progress = tab_data.pop("_queued_progress", None)
+            logs = tab_data.pop("_queued_logs", None)
+        if progress is not None:
+            self.update_progress(tab_id, progress)
+        if logs:
+            until = float(tab_data.get("_log_user_scrolling_until", 0.0) or 0.0)
+            if time.monotonic() < until:
+                with self._ui_queue_lock:
+                    pending = tab_data.get("_queued_logs")
+                    if not isinstance(pending, list):
+                        pending = []
+                        tab_data["_queued_logs"] = pending
+                    pending.extend(list(logs))
+                    if len(pending) > 2000:
+                        tab_data["_queued_logs"] = pending[-2000:]
+                self._schedule_runtime_ui_flush(tab_id)
+                return
+            self._append_raw_logs(tab_id, logs)
+
+    def _append_raw_logs(self, tab_id, lines):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        if not lines:
+            return
+        self.update_progress(tab_id, "")
+        log_box = tab_data.get("log_box")
+        if not log_box or not log_box.winfo_exists():
+            return
+        text = "\n".join(str(x) for x in lines if x is not None)
+        if not text:
+            return
+        log_box.configure(state="normal")
+        log_box.insert("end", text + "\n")
         if tab_data.get("log_auto_follow_enabled", True):
             log_box.see("end")
         log_box.configure(state="disabled")
@@ -4324,7 +4628,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if "Name:" in line and "Length:" in line and "dtype:" in line: return False
         if line.startswith("<class") or line.startswith("#   Column") or line.startswith("---  ------"): return False
         if "RangeIndex:" in line or "Data columns" in line or "memory usage:" in line or "dtypes:" in line: return False
-        important_keywords = ["---", "[DB]", "正在", "完成", "成功", "写入", "报错", "异常", "Error", "Exception", "用时", "共"]
+        important_keywords = ["---", "[DB]", "[Notebook]", "kernel", "Kernel", "正在", "完成", "成功", "写入", "报错", "异常", "Error", "Exception", "用时", "共"]
         for kw in important_keywords:
             if kw in line: return True
         return False
@@ -4355,8 +4659,11 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             env["GB_ASYNC_LOG_DIR"] = os.path.abspath(self.get_attempt_async_logs_dir(manifest, session_id))
         else:
             env["GB_ASYNC_LOG_DIR"] = os.path.abspath(tab_data["async_log_dir"])
+        run_id = self.make_run_id(step_info)
+        step_info["run_id"] = run_id
         run_info = tab_data.get("current_run_info")
         if run_info is not None:
+            run_info["run_id"] = run_id
             run_info["timeline_env"] = dict(timeline_env)
             run_info["timeline_started_at"] = time.time()
         env.update(timeline_env)
@@ -4396,7 +4703,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 )
                 
                 # --- 新增：存储进程句柄 ---
-                tab_data["current_process"] = process
+                self.register_process(tab_id, run_id, process, step_info)
                 if run_info is not None:
                     run_info["pid"] = process.pid
 
@@ -4409,7 +4716,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                     f.write(pending_progress_line + "\n")
                     f.flush()
                     if self.is_important_log(pending_progress_line):
-                        self.safe_after(0, self.log_msg, tab_id, pending_progress_line, True, True)
+                        self.queue_runtime_progress(tab_id, pending_progress_line)
                     pending_progress_line = None
 
                 for line in process.stdout:
@@ -4425,19 +4732,19 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                             continue
                         if self.is_progress_line(clean_line):
                             pending_progress_line = clean_line
-                            self.safe_after(0, self.update_progress, tab_id, clean_line)
+                            self.queue_runtime_progress(tab_id, clean_line)
                             continue
                         flush_pending_progress()
                         f.write(chunk + "\n")
                         f.flush()
                         if self.is_important_log(clean_line):
-                            self.safe_after(0, self.log_msg, tab_id, clean_line, True, False)
+                            self.queue_runtime_log(tab_id, clean_line)
 
                 flush_pending_progress()
                 
                 process.wait()
                 # --- 新增：任务完成后清理句柄 ---
-                tab_data["current_process"] = None
+                self.unregister_process(tab_id, run_id)
                 if init_env_applied:
                     year_info_path = os.path.join(manifest["workspace_root"], "参评信息", "年份信息.txt")
                     if os.path.isfile(year_info_path):
@@ -4467,7 +4774,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                     self.safe_after(0, self.fail_current_chain, tab_id, step_info, "代码执行失败，已终止当前链条并高亮错误文件夹。")
                 
         except Exception as e:
-            tab_data["current_process"] = None
+            self.unregister_process(tab_id, step_info.get("run_id", ""))
             self.update_attempt_error_snapshot(tab_id, run_info or step_info)
             self.append_terminal_timeline_end(tab_id, run_info or step_info, "error")
             self.safe_after(0, self.set_pause_button_state, tab_id, self.has_async_processes(tab_id))
@@ -4497,11 +4804,31 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         try:
             current_manifest = tab_data.get("manifest", {})
             tab_data["manifest"] = reconcile_filesystem(current_manifest)
-            self.render_tab_content(tab_id)
-            self.render_workspace_stepper(tab_id)
-            self.render_gantt_tab(tab_id)
-            # 计算结果页需要跟着文件系统刷新，避免用户停留在其它页运行 step_4 后结果区仍显示旧内容。
-            self.render_calc_results_panel(tab_id)
+            view_name = self.get_workspace_view_name(tab_id) if hasattr(self, "get_workspace_view_name") else "主界面"
+
+            tab_data["main_panel_dirty"] = True
+            tab_data["gantt_panel_dirty"] = True
+            tab_data["data_panel_dirty"] = True
+            tab_data["resource_panel_dirty"] = True
+            tab_data["results_panel_dirty"] = True
+
+            if view_name == "流水线":
+                self.render_gantt_tab(tab_id)
+                tab_data["gantt_panel_dirty"] = False
+            elif view_name == "数据文件":
+                self.render_right_panel(tab_id)
+                tab_data["data_panel_dirty"] = False
+            elif view_name == "规则/所给数据集":
+                self.render_resource_panel(tab_id)
+                tab_data["resource_panel_dirty"] = False
+            elif view_name == "计算结果":
+                self.render_calc_results_panel(tab_id)
+                tab_data["results_panel_dirty"] = False
+            else:
+                self.render_workspace_stepper(tab_id)
+                self.refresh_output_board(tab_id)
+                tab_data["main_panel_dirty"] = False
+                tab_data["data_panel_dirty"] = False
         except Exception as exc:
             self.show_gui_error("刷新界面失败", exc, "当前标签页刷新失败，界面已保留现场，请检查报错信息。", tab_id=tab_id)
         finally:
@@ -4605,3 +4932,4 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
 if __name__ == "__main__":
     app = GoldenBullTerminal()
     app.mainloop()
+

@@ -122,6 +122,8 @@ rel = find_rel(__file__,'参评信息')
 impt = find_rel(__file__, '重要文件')
 ins = ''
 
+start = insert_bookmark(__file__,0, rel)
+
 if os.path.exists(f'{rel}是否采用机构数据.txt'): # 修改！
     ins = '全量数据/'
     with open(f'{rel}是否采用机构数据.txt', 'r',encoding='utf-8') as f:
@@ -144,4 +146,5 @@ if os.path.exists(f'{rel}是否采用机构数据.txt'): # 修改！
 delete_file(f'输出文件/{ins}')
 
 print('已完成缓冲文件的冲洗..')
+insert_bookmark(__file__, 1, rel, start)
 time.sleep(2)
