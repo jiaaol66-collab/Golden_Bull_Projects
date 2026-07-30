@@ -15,6 +15,11 @@ from datetime import datetime
 
 import pandas as pd
 import exchange_calendars as xcals
+import os
+import time
+current = os.path.dirname(__file__)
+os.chdir(current)
+
 
 
 def build_trade_days(yr: int, exchange: str = "XSHG", date_fmt: str | None = None) -> dict:
@@ -26,8 +31,12 @@ def build_trade_days(yr: int, exchange: str = "XSHG", date_fmt: str | None = Non
     :return:         {'trade_days', 'weekly_last_trading_days',
                       'monthly_last_trading_days'}，值均为 datetime 列表
     """
-    start_date = datetime(yr - 7, 1, 1)   # {YR-7}-1-1
-    end_date = datetime(yr, 3, 31)   # {YR}-3-31
+    if yr != 999:
+        start_date = datetime(yr - 8, 1, 1)   # {YR-7}-1-1
+        end_date = datetime(yr, 3, 31)  if datetime.now().year >= yr else datetime(datetime.now().year, 12,31) # {YR}-3-31
+    else:
+        end_date  = datetime.now().replace(hour=0, minute=0, second=0)  # 清除小时分钟秒毫秒
+        start_date = datetime(end_date.year - 6, 1, 1)   # {YR-7}-1-1
 
     cal = xcals.get_calendar(exchange)
     sessions = cal.sessions_in_range(start_date, end_date)
@@ -37,6 +46,9 @@ def build_trade_days(yr: int, exchange: str = "XSHG", date_fmt: str | None = Non
 
     s = pd.Series(trade_days, index=trade_days)
     iso = trade_days.isocalendar()  # 跨自然年的周边界用 ISO 周处理
+    # 如果yr = 999, 所有交易日格式化为%Y%m%d
+    if date_fmt is None:
+        date_fmt = "%Y%m%d"
 
     # 每周 / 每月最后一个交易日
     weekly_last = s.groupby([iso.year, iso.week]).max().sort_values()
@@ -65,7 +77,34 @@ def save_trade_days(yr: int, out_path: str, exchange: str = "XSHG", date_fmt: st
 
 
 if __name__ == "__main__":
-    yr = 2026  # 评奖当年，按需替换（项目里可用 get_year(rel) 取得）
-    # impt 为项目中“重要文件”路径，例如：
+    raw = input("请输入评奖当年（999 表示提取至今日）：").strip()
+
+    try:
+        yr = int(raw) if raw else 999
+    except ValueError:
+        print("输入不是有效年份，将使用 999（提取至今日）。")
+        yr = 999
+        
+    max_year = datetime.now().year + 7
+    if yr != 999 and yr > max_year:
+        print(f"输入的 yr 不能大于 {max_year}！")
+        time.sleep(3)
+        raise ValueError(f"输入的 yr 不能大于 {max_year}！")
+    
+    # 如果yr过小, 自动退化为提取当日往前推6年的交易日历
+    if yr <= 2020: 
+        yr = 999
+
+    if yr == 999:
+        print(f'将生成{datetime.now().year-6}0101到{datetime.now().strftime("%Y%m%d")}范围内的交易日历')
+    else:
+        if yr > datetime.now().year: end_date = str(datetime.now().year)+'-12-31'
+        else: end_date = str(yr) + '03-31'
+        print(f'注意! 将生成{yr-8}-01-01到{end_date}范围内的交易日历')
+        
+    other = yr if yr != 999 else "other"
+    appe = '' if other != 'other' else '_'+ datetime.now().strftime('%Y%m%d')[2:]
+    if str(yr) not in os.listdir(current) and yr != 999:
+        os.makedirs(str(yr), exist_ok=True)
     # save_trade_days(yr, f"{impt}其他文件/trade_days.xlsx")
-    save_trade_days(yr, f"{yr}/trade_days.xlsx")
+    save_trade_days(yr, f"{other}/trade_days{appe}.xlsx", date_fmt = '%Y-%m-%d')

@@ -28,6 +28,13 @@ _log/
 *.zip
 *.json
 
+# Codex
+.agents/
+.codex/
+.codex_tmp/
+.pytest_cache/
+tmp/
+
 # Docs
 DB_README.md
 debug-*.md
@@ -48,3 +55,5 @@ Thumbs.db
 
 # Award child repos
 /GB_*/
+/Collaborate/
+/tests/

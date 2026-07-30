@@ -39,6 +39,8 @@ Use the available DOCX/document skill for editing and render verification. Follo
 - Use tables only for genuinely repeated mappings or comparable records. Prefer labeled paragraphs for paths, processing rules, outputs, and troubleshooting.
 - Put high-risk business or data distinctions in a restrained callout close to the relevant instruction. Examples include index-code identity, scale units, screening-versus-scoring semantics, and “do not substitute” warnings.
 - Describe paths generically with `{YR}`. Link to code and true external websites. Do not add convenience links whose only purpose is opening `已处理/{YR}` or public-year folders.
+- Make every hyperlink to project-local code or files relative to the DOCX directory. Store the relationship target with forward slashes and `TargetMode="External"` (for example, `1_计算.py` or `../../../userlib/configs/broker_am_config.py`). Never write `file:///` URIs, drive-letter paths, UNC paths, or workspace-absolute paths; HTTP(S) external-source links remain absolute.
+- After saving, reopen the DOCX package and resolve each local relationship target against the DOCX directory. The resolved target must exist. Moving or copying the workspace must not leave a link pointing to the source workspace.
 - Keep required storage paths in prose when they affect program lookup.
 - Distinguish automatic work from manual work. State exactly what a person edits, where it is saved, how to confirm success, and what to do after a failure.
 - Prefer exact field names and log messages over screenshots. Add screenshots only when they show current UI-only actions that cannot be expressed more reliably as text.
@@ -60,7 +62,8 @@ Treat review as a separate pass from authoring:
 3. Check that manual instructions are executable by a new operator without guessing.
 4. Check that screening reasons are not incorrectly described as pre-score deletion when the code only annotates them.
 5. Check for repeated paragraphs and contradictory lookup orders.
-6. Run:
+6. Inspect every hyperlink relationship. Project-local targets must be relative to the DOCX directory, use forward slashes, resolve to an existing file, and contain no `file:///`, drive letter, UNC prefix, or workspace-absolute path.
+7. Run:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".codex/skills/write-golden-bull-step-docs/scripts/audit_step_docs.ps1" -WorkspaceRoot "<workspace>"
@@ -68,7 +71,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".codex/skills/write-gol
 
 The audit must report no blocking errors. Review warnings manually; do not silence them merely to pass.
 
-7. Visually confirm the operator-guide hierarchy: title and subtitle are distinct; heading levels are obvious; callouts are not clipped; paths wrap cleanly; no heading is stranded at a page bottom; and no page is dominated by decorative whitespace.
+8. Visually confirm the operator-guide hierarchy: title and subtitle are distinct; heading levels are obvious; callouts are not clipped; paths wrap cleanly; no heading is stranded at a page bottom; and no page is dominated by decorative whitespace.
 
 ## Completion report
 

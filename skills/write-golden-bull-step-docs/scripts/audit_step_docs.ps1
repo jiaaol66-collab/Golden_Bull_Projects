@@ -31,7 +31,7 @@ foreach ($doc in $docs) {
         $reader = [IO.StreamReader]::new($relsEntry.Open())
         $relsXml = $reader.ReadToEnd(); $reader.Dispose()
         [xml]$null = $documentXml
-        [xml]$null = $relsXml
+        [xml]$relsDocument = $relsXml
 
         $plain = [Net.WebUtility]::HtmlDecode(
             ($documentXml -replace '</w:p>', "`n" -replace '<[^>]+>', '')
@@ -105,20 +105,56 @@ foreach ($doc in $docs) {
             }
         }
 
-        $localLinks = [regex]::Matches($relsXml, 'Target="(file:///[^\"]+)"')
-        if ($localLinks.Count -eq 0 -and $doc.Name -notmatch '总览') {
-            $issues.Add('未发现对应代码的本地超链接')
-        }
-        foreach ($match in $localLinks) {
-            $uriText = [Net.WebUtility]::HtmlDecode($match.Groups[1].Value)
+        $localLinkCount = 0
+        $hyperlinkRelationships = $relsDocument.SelectNodes(
+            "//*[local-name()='Relationship' and substring(@Type, string-length(@Type) - string-length('/hyperlink') + 1) = '/hyperlink']"
+        )
+        foreach ($relationship in $hyperlinkRelationships) {
+            $target = [Net.WebUtility]::HtmlDecode($relationship.GetAttribute('Target'))
+            $targetMode = $relationship.GetAttribute('TargetMode')
+
+            if ($target -match '^(?i:https?://|mailto:)') {
+                continue
+            }
+
+            if ($target -match '^(?i:file:/+)' -or
+                $target -match '^[A-Za-z]:[\\/]' -or
+                $target -match '^\\\\' -or
+                $target -match '^/') {
+                $issues.Add("项目内链接使用了绝对路径：$target")
+                continue
+            }
+
+            if ($target -match '^[A-Za-z][A-Za-z0-9+.-]*:') {
+                $issues.Add("无法识别的超链接协议：$target")
+                continue
+            }
+
+            $localLinkCount++
+            if ($targetMode -ne 'External') {
+                $issues.Add("本地相对链接未设置 TargetMode=`"External`"：$target")
+            }
+            if ($target.Contains('\')) {
+                $issues.Add("本地相对链接应使用正斜杠：$target")
+            }
+
             try {
-                $localPath = [uri]::UnescapeDataString(([uri]$uriText).LocalPath)
+                $decodedTarget = [uri]::UnescapeDataString($target).Replace(
+                    '/',
+                    [IO.Path]::DirectorySeparatorChar
+                )
+                $localPath = [IO.Path]::GetFullPath(
+                    [IO.Path]::Combine($doc.DirectoryName, $decodedTarget)
+                )
                 if (-not (Test-Path -LiteralPath $localPath)) {
-                    $issues.Add("失效本地链接：$localPath")
+                    $issues.Add("失效本地相对链接：$target -> $localPath")
                 }
             } catch {
-                $issues.Add("无法解析本地链接：$uriText")
+                $issues.Add("无法解析本地相对链接：$target")
             }
+        }
+        if ($localLinkCount -eq 0) {
+            $issues.Add('未发现对应代码的本地相对超链接')
         }
 
         if ($plain.Length -lt 250) { $warnings.Add('正文较短，需人工确认是否覆盖输入、人工步骤、输出和故障处理') }

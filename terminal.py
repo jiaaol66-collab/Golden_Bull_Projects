@@ -24,12 +24,13 @@ from award_config import (
     get_manifest_award,
     has_award_config,
 )
-from gui.config_editor import ConfigEditorWindow
+from gui.config_editor import ConfigEditorWindow, export_year_config_json
 from gui.file_tree_editor import FileStructureEditorWindow
 from gui.pipeline_gantt import PipelineGanttMixin
 from gui.workspace_ui import WorkspaceUIMixin
 from gui.style_config import *
 from gui import motion
+from scripts.startup_log_cleanup import cleanup_deleted_workspace_logs, format_bytes
 from userlib.tools import custom_dialog
 
 try:
@@ -632,14 +633,82 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             ".terminal_sidebar_state.json",
         )
         
-        if not os.path.exists("logs"):
-            os.makedirs("logs")
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        logs_root = os.path.join(project_root, "logs")
+        os.makedirs(logs_root, exist_ok=True)
+        award_roots = {
+            os.path.abspath(os.path.join(project_root, folder))
+            for folder in AWARD_FOLDER_MAP.values()
+            if folder
+        }
+        try:
+            self.startup_log_cleanup_summary = cleanup_deleted_workspace_logs(
+                logs_root=logs_root,
+                award_roots=award_roots,
+                repo_root=project_root,
+            )
+        except Exception as exc:
+            self.startup_log_cleanup_summary = {
+                "deleted": [],
+                "failed": [{"workspace_name": "启动检查", "log_dir": logs_root, "error": str(exc)}],
+                "bytes_freed": 0,
+            }
 
         self.setup_layout()
+        if (
+            self.startup_log_cleanup_summary.get("deleted")
+            or self.startup_log_cleanup_summary.get("failed")
+        ):
+            self.safe_after(250, self.show_startup_log_cleanup_summary)
         self.protocol("WM_DELETE_WINDOW", self.on_app_close)
         self.poll_process_job = self.safe_after(1000, self.poll_process_states)
         self.bind("<Configure>", self.on_window_configure)
         self.window_resize_job = self.safe_after(150, self.apply_adaptive_layout)
+
+    def show_startup_log_cleanup_summary(self):
+        summary = getattr(self, "startup_log_cleanup_summary", {}) or {}
+        deleted = list(summary.get("deleted") or [])
+        failed = list(summary.get("failed") or [])
+        lines = []
+
+        if deleted:
+            lines.append(
+                f"已删除 {len(deleted)} 个已不存在工作区的日志，"
+                f"释放 {format_bytes(summary.get('bytes_freed', 0))}。"
+            )
+            project_root = os.path.dirname(os.path.abspath(__file__))
+            for item in deleted:
+                log_dir = str(item.get("log_dir", ""))
+                try:
+                    display_log_dir = os.path.relpath(log_dir, project_root)
+                except ValueError:
+                    display_log_dir = log_dir
+                lines.extend([
+                    "",
+                    f"工作区：{item.get('workspace_name') or item.get('workspace_id') or '未命名'}",
+                    f"日志：{display_log_dir}",
+                    f"大小：{format_bytes(item.get('size_bytes', 0))}",
+                ])
+
+        if failed:
+            if lines:
+                lines.append("")
+            lines.append(f"另有 {len(failed)} 项日志清理失败：")
+            for item in failed:
+                lines.extend([
+                    "",
+                    f"工作区：{item.get('workspace_name') or '未识别'}",
+                    f"日志：{item.get('log_dir') or '未识别'}",
+                    f"原因：{item.get('error') or '未知错误'}",
+                ])
+
+        if not lines:
+            return
+        title = "启动日志清理完成" if not failed else "启动日志清理有未完成项"
+        if failed:
+            messagebox.showwarning(title, "\n".join(lines), parent=self)
+        else:
+            messagebox.showinfo(title, "\n".join(lines), parent=self)
 
     def load_sidebar_selection_state(self):
         data = self.read_json_file(self.sidebar_selection_state_path, default={})
@@ -1086,6 +1155,19 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             **button_soft_style(),
         )
         self.sidebar_apply_config_json_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        sidebar_config_btn_row_3 = ctk.CTkFrame(self.sidebar_config_card, fg_color="transparent")
+        sidebar_config_btn_row_3.pack(fill="x", padx=8, pady=(0, 8))
+        self.sidebar_export_config_json_btn = ctk.CTkButton(
+            sidebar_config_btn_row_3,
+            text="导出 JSON",
+            command=self.export_sidebar_config_json,
+            corner_radius=RADIUS_MD,
+            height=sidebar_compact_button_height,
+            font=sidebar_hint_font,
+            **button_secondary_style(),
+        )
+        self.sidebar_export_config_json_btn.pack(fill="x")
         
         sidebar_state = self.load_sidebar_selection_state()
         award_labels = get_award_labels()
@@ -1256,7 +1338,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         award_root = _clean(award_root)
         if not award_root or not os.path.isdir(award_root):
             return ""
-        for file_name in ("运行此文件.py", "initialize.py"):
+        for file_name in ("initialize.py",):
             candidate = os.path.join(award_root, file_name)
             if os.path.isfile(candidate):
                 return candidate
@@ -1364,8 +1446,8 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         btns1 = ctk.CTkFrame(action_row, fg_color=SURFACE_BG)
         btns1.pack(fill="x")
         ctk.CTkButton(btns1, text="打开工作区文件夹", command=lambda: open_folder(workspace_root), height=34, **button_secondary_style()).pack(fill="x", pady=(0, 8))
-        ctk.CTkButton(btns1, text="打开 step_0 · 运行此文件.py", command=lambda: open_code_file(step0_runner_path), height=34, **button_secondary_style()).pack(fill="x", pady=(0, 8))
-        ctk.CTkButton(btns1, text="打开奖项初始化 · 运行此文件.py", command=lambda: open_code_file(award_initialize_runner_path), height=34, **button_secondary_style()).pack(fill="x")
+        ctk.CTkButton(btns1, text="打开 step_0 · setup.py", command=lambda: open_code_file(step0_runner_path), height=34, **button_secondary_style()).pack(fill="x", pady=(0, 8))
+        ctk.CTkButton(btns1, text="打开奖项初始化 · initialize.py", command=lambda: open_code_file(award_initialize_runner_path), height=34, **button_secondary_style()).pack(fill="x")
 
         if blueprint_path:
             ctk.CTkLabel(body, text=f"文件结构路径：{blueprint_path}", text_color=TEXT_MUTED, font=ui_font(11), wraplength=520, justify="left").pack(anchor="w", padx=14, pady=(16, 0))
@@ -1400,7 +1482,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         award_root = _clean((payload or {}).get("award_root")) or self.get_sidebar_award_root(award_name)
         workspace_root = _clean((payload or {}).get("workspace_root")) or os.path.join(get_award_folder(award_name), workspace_name)
         _, bp_path = self.get_selected_workspace_blueprint_path(award_name, year_text)
-        step0_runner_path = os.path.join(workspace_root, "step_0_前期准备", "运行此文件.py")
+        step0_runner_path = os.path.join(workspace_root, "step_0_前期准备", "setup.py")
         award_initialize_runner_path = self.get_award_initialize_script_path(award_root)
         self.award_template_guide_context = {
             "award_name": award_name,
@@ -1468,7 +1550,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             return
         script_path = self.get_award_initialize_script_path(award_root)
         if not script_path:
-            messagebox.showwarning("未找到初始化脚本", f"未在奖项根目录找到 运行此文件.py 或 initialize.py：\n{award_root}")
+            messagebox.showwarning("未找到初始化脚本", f"未在奖项根目录找到 initialize.py：\n{award_root}")
             return
         self.sidebar_initialize_context = {"active": True, "award": award_name, "year": year_text, "armed_at": time.time()}
         threading.Thread(
@@ -1623,10 +1705,12 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         file_state = "normal" if config_exists else "disabled"
         json_state = "normal" if (valid_year and has_mapping) else "disabled"
         apply_state = "normal" if (valid_year and config_exists and config_json_path and os.path.isfile(config_json_path)) else "disabled"
+        export_state = "normal" if (valid_year and config_exists) else "disabled"
         self.sidebar_open_config_editor_btn.configure(state=editor_state)
         self.sidebar_open_config_file_btn.configure(state=file_state)
         self.sidebar_select_config_json_btn.configure(state=json_state)
         self.sidebar_apply_config_json_btn.configure(state=apply_state)
+        self.sidebar_export_config_json_btn.configure(state=export_state)
         self.refresh_sidebar_file_structure_button(award_name, year_text)
 
     def get_selected_workspace_blueprint_path(self, award_name=None, year_text=None):
@@ -1678,6 +1762,58 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.save_award_year_fixed_resource(award_name, year_text, "config_json_path", selected_path)
         self.refresh_sidebar_config_browser(award_name, year_text)
         return selected_path
+
+    def export_sidebar_config_json(self):
+        award_name = self.award_menu.get()
+        year_text = _clean(self.year_menu.get())
+        config_path = self.get_sidebar_award_config_path(award_name)
+        if not award_name or not year_text or year_text == "无可用年份":
+            messagebox.showinfo("提示", "请先选择有效的奖项和年份。")
+            return ""
+        if not config_path or not os.path.isfile(config_path):
+            messagebox.showwarning("未找到配置文件", f"未找到配置文件:\n{config_path}")
+            return ""
+
+        fixed_resources = self.get_award_year_fixed_resources(award_name, year_text)
+        current_json_path = _clean(fixed_resources.get("config_json_path"))
+        current_json_dir = os.path.dirname(current_json_path) if current_json_path else ""
+        if not current_json_dir or not os.path.isdir(current_json_dir):
+            current_json_dir = os.path.dirname(config_path)
+        safe_award_name = re.sub(r'[<>:"/\\|?*]+', "_", award_name).strip(" ._") or "配置"
+        initial_file = (
+            os.path.basename(current_json_path)
+            if current_json_path
+            else f"{safe_award_name}_{year_text}_默认配置.json"
+        )
+        selected_path = filedialog.asksaveasfilename(
+            parent=self,
+            title=f"导出 {award_name} {year_text} 配置 JSON",
+            initialdir=current_json_dir,
+            initialfile=initial_file,
+            defaultextension=".json",
+            filetypes=[
+                ("JSON 文件", "*.json"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if not selected_path:
+            return ""
+
+        try:
+            exported_path = export_year_config_json(config_path, year_text, selected_path)
+        except Exception as exc:
+            messagebox.showerror("导出 JSON 失败", str(exc))
+            return ""
+
+        self.save_award_year_fixed_resource(
+            award_name,
+            year_text,
+            "config_json_path",
+            exported_path,
+        )
+        self.refresh_sidebar_config_browser(award_name, year_text)
+        messagebox.showinfo("导出成功", f"配置 JSON 已导出：\n{exported_path}")
+        return exported_path
 
     def _ensure_sidebar_config_editor(self, award_name, year_text):
         config_path = self.get_sidebar_award_config_path(award_name)
@@ -2623,9 +2759,9 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         if not step_info:
             return False
         script_name = os.path.basename(step_info.get("script_name") or step_info.get("rel_path") or "")
-        return script_name.lower() == "test.py"
+        return script_name.lower() in {"inherit.py", "test.py"}
 
-    def refresh_terminal_after_test_run(self, tab_id, step_info):
+    def refresh_terminal_after_inherit_run(self, tab_id, step_info):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
             return
@@ -2636,7 +2772,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         self.update_year_menu(award, selected_year=current_year, selected_workspace=current_workspace)
         for open_tab_id in list(self.active_tabs_data.keys()):
             self.refresh_tab_panels(open_tab_id)
-        self.log_msg(tab_id, f"检测到 {os.path.basename(step_info.get('rel_path', step_info.get('script_name', 'test.py')))} 执行完成，已刷新终端工作区列表。")
+        self.log_msg(tab_id, f"检测到 {os.path.basename(step_info.get('rel_path', step_info.get('script_name', 'inherit.py')))} 执行完成，已刷新终端工作区列表。")
 
     def update_year_menu(self, selected_award, selected_year="", selected_workspace=""):
         self.clear_sidebar_initialize_context()
@@ -3051,6 +3187,16 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 "error_file_rel_path": "",
                 "error_is_root": False,
                 "left_tab_preferred": "步骤代码",
+                "left_tabview": None,
+                "left_step_tab": None,
+                "left_code_tab": None,
+                "left_materials_tab": None,
+                "materials_scroll": None,
+                "materials_rendered": False,
+                "materials_dirty": False,
+                "materials_category_menu": None,
+                "materials_category_preferred": "全部资料",
+                "materials_reset_scroll": False,
                 "async_pid_file": self.make_async_pid_file(manifest, tab_id),
                 "async_log_dir": self.make_async_log_dir(manifest, tab_id),
                 "console_height": self.get_default_console_height(),
@@ -3292,8 +3438,12 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         tab_data["run_timer_mode"] = ""
 
         left_tab = _clean(state.get("left_tab_preferred"))
-        if left_tab in {"步骤代码", "代码文件夹"}:
+        if left_tab in {"步骤代码", "代码文件夹", "资料"}:
             tab_data["left_tab_preferred"] = left_tab
+
+        materials_category = _clean(state.get("materials_category_preferred"))
+        if materials_category:
+            tab_data["materials_category_preferred"] = materials_category
 
         right_view = _clean(state.get("right_view"))
         if right_view in {"output", "processed", "important", "database"}:
@@ -3332,7 +3482,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 left_tab = _clean(left_tabview.get()) or left_tab
             except Exception:
                 pass
-        if left_tab not in {"步骤代码", "代码文件夹"}:
+        if left_tab not in {"步骤代码", "代码文件夹", "资料"}:
             left_tab = "步骤代码"
 
         step_vars = tab_data.get("step_vars", {})
@@ -3365,6 +3515,9 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             "run_timer_failed": bool(tab_data.get("run_timer_failed")),
             "workspace_view_preferred": workspace_view,
             "left_tab_preferred": left_tab,
+            "materials_category_preferred": _clean(
+                tab_data.get("materials_category_preferred", "全部资料")
+            ) or "全部资料",
             "right_view": tab_data.get("right_view")
             if tab_data.get("right_view") in {"output", "processed", "important", "database"}
             else "output",
@@ -4755,7 +4908,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             if process.returncode == 0:
                 self.safe_after(0, self.log_msg, tab_id, f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] ==== 执行成功 ====")
                 if self.should_refresh_terminal_after_run(step_info):
-                    self.safe_after(0, self.refresh_terminal_after_test_run, tab_id, step_info)
+                    self.safe_after(0, self.refresh_terminal_after_inherit_run, tab_id, step_info)
                 if step_info.get("is_post_batch_update"):
                     self.safe_after(0, self.finish_post_batch_update, tab_id, True)
                 elif step_info.get("is_manual_code"):
@@ -4811,6 +4964,7 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             tab_data["data_panel_dirty"] = True
             tab_data["resource_panel_dirty"] = True
             tab_data["results_panel_dirty"] = True
+            tab_data["materials_dirty"] = True
 
             if view_name == "流水线":
                 self.render_gantt_tab(tab_id)
@@ -4829,6 +4983,9 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 self.refresh_output_board(tab_id)
                 tab_data["main_panel_dirty"] = False
                 tab_data["data_panel_dirty"] = False
+
+            if tab_data.get("left_tab_preferred") == "资料":
+                self.refresh_materials_tab(tab_id)
         except Exception as exc:
             self.show_gui_error("刷新界面失败", exc, "当前标签页刷新失败，界面已保留现场，请检查报错信息。", tab_id=tab_id)
         finally:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "创建金牛奖项"
+  short_description: "按文字要求创建金牛奖工作区、模板代码、说明与安全门控"
+  default_prompt: "Use $create-golden-bull-award to create a Golden Bull Award workspace from my written requirements and supplied source materials."

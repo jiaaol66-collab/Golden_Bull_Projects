@@ -163,6 +163,7 @@ def main():
     _append_trace("step-entry-sitecustomize-loaded", pid=os.getpid(), script=script_path)
 
     original_argv = list(sys.argv)
+    original_script_sys_path = None
     try:
         sys.argv = [script_path] + original_argv[2:]
         os.environ["GB_SCRIPT_PATH"] = script_path
@@ -170,6 +171,8 @@ def main():
             _append_trace("step-entry-notebook", pid=os.getpid(), script=script_path)
             _run_notebook(script_path, original_argv[2:])
         else:
+            original_script_sys_path = list(sys.path)
+            sys.path.insert(0, os.path.dirname(script_path))
             runpy.run_path(script_path, run_name="__main__")
     except Exception as exc:
         if _is_notebook_path(script_path):
@@ -178,6 +181,8 @@ def main():
         raise
     finally:
         _append_trace("step-entry-finish", pid=os.getpid(), script=script_path)
+        if original_script_sys_path is not None:
+            sys.path[:] = original_script_sys_path
         sys.argv = original_argv
 
 

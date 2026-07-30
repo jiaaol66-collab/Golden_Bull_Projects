@@ -109,6 +109,8 @@ The overview may mention a manual gate once. The step document contains the deta
 - placeholder content;
 - broken DOCX/OOXML;
 - missing corresponding-code link or nonexistent code target;
+- project-local hyperlink stored as `file:///`, a drive-letter/UNC path, or any other absolute path instead of a target relative to the DOCX directory;
+- relative project-local hyperlink that does not resolve to an existing target after the DOCX is saved;
 - invented or outdated external source details;
 - wrong search order or format priority;
 - duplicated paragraphs that can cause conflicting actions;

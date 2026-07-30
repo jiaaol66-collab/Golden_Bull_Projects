@@ -118,6 +118,24 @@ def _is_step_id(value):
     return bool(s) and s.replace("_", "").isdigit()
 
 
+def _parse_run_order_value(value):
+    """把可用的非负整数顺序统一解析为 int；空白/非法值返回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        if value == value and value.is_integer() and value >= 0:
+            return int(value)
+        return None
+    text = _clean(value)
+    if text.isdigit():
+        return int(text)
+    if re.fullmatch(r"\d+\.0+", text):
+        return int(float(text))
+    return None
+
+
 # ======================================================================
 #  纯数据层：行 ↔ 树
 # ======================================================================
@@ -185,6 +203,73 @@ class FileTreeModel:
     def set_cell(self, ri, name, value):
         if 0 <= ri < len(self.rows):
             self._set_on(self.rows[ri], name, value)
+
+    def normalize_run_orders(self, rebuild=True):
+        """将代码运行顺序压紧为连续链。
+
+        顺序链固定从 0 开始，规范为 0, 1, 2...。非法顺序视为未分配。
+        返回实际被改写的单元格数量。
+        """
+        ordered = []
+        changed = 0
+        for ri, row in enumerate(self.rows):
+            order_text = self.cell(row, "运行顺序")
+            if self.cell(row, "代码/说明") != "代码":
+                if order_text:
+                    self._set_on(row, "运行顺序", None)
+                    changed += 1
+                continue
+            order_num = _parse_run_order_value(order_text)
+            if order_num is None:
+                if order_text:
+                    self._set_on(row, "运行顺序", None)
+                    changed += 1
+                continue
+            ordered.append((order_num, ri))
+
+        ordered.sort(key=lambda item: (item[0], item[1]))
+        start_order = 0
+        for offset, (_old_order, ri) in enumerate(ordered):
+            expected = str(start_order + offset)
+            if self.cell(self.rows[ri], "运行顺序") != expected:
+                self._set_on(self.rows[ri], "运行顺序", expected)
+                changed += 1
+
+        if rebuild and changed:
+            self.rebuild()
+        return changed
+
+    def set_run_order_position(self, ri, target_order, rebuild=True):
+        """把一行代码抽出后插入目标顺序，并同时压紧整条链。"""
+        if not (0 <= ri < len(self.rows)):
+            return False
+        target_num = _parse_run_order_value(target_order)
+        if self.cell(self.rows[ri], "代码/说明") != "代码" or target_num is None:
+            self._set_on(self.rows[ri], "运行顺序", None)
+            self.normalize_run_orders(rebuild=False)
+            if rebuild:
+                self.rebuild()
+            return True
+
+        self.normalize_run_orders(rebuild=False)
+        other_rows = []
+        for other_ri, row in enumerate(self.rows):
+            if other_ri == ri or self.cell(row, "代码/说明") != "代码":
+                continue
+            order_num = _parse_run_order_value(self.cell(row, "运行顺序"))
+            if order_num is not None:
+                other_rows.append((order_num, other_ri))
+        other_rows.sort(key=lambda item: (item[0], item[1]))
+
+        start_order = 0
+        insert_at = max(0, min(target_num - start_order, len(other_rows)))
+        chain_rows = [other_ri for _order_num, other_ri in other_rows]
+        chain_rows.insert(insert_at, ri)
+        for offset, chain_ri in enumerate(chain_rows):
+            self._set_on(self.rows[chain_ri], "运行顺序", str(start_order + offset))
+        if rebuild:
+            self.rebuild()
+        return True
 
     # ---- 行的路径与分类 ----
     def _segments(self, row):
@@ -323,9 +408,16 @@ class FileTreeModel:
     def edit_file(self, ri, fields):
         if not (0 <= ri < len(self.rows)):
             return
+        has_order_update = "运行顺序" in fields
+        target_order = fields.get("运行顺序")
         for name, val in fields.items():
+            if name == "运行顺序":
+                continue
             self._set_on(self.rows[ri], name, val)
-        self.rebuild()
+        if has_order_update:
+            self.set_run_order_position(ri, target_order)
+        elif not self.normalize_run_orders():
+            self.rebuild()
 
     def add_file(self, folder_path, name="新文件.py", file_type="代码"):
         folder_path = tuple(folder_path)
@@ -369,14 +461,16 @@ class FileTreeModel:
     def delete_file(self, ri):
         if 0 <= ri < len(self.rows):
             del self.rows[ri]
-            self.rebuild()
+            if not self.normalize_run_orders():
+                self.rebuild()
 
     def delete_folder(self, path):
         path = tuple(path)
         if path == ():
             return
         self.rows[:] = [row for row in self.rows if not self._row_matches_path(row, path)]
-        self.rebuild()
+        if not self.normalize_run_orders():
+            self.rebuild()
 
     def _apply_path_to_row(self, row, segs):
         segs = list(segs)
@@ -632,6 +726,24 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._confirm_popup = None
         self._loading_overlay = None
         self._loading_label = None
+        self.main_notebook = None
+        self._editor_tab = None
+        self._order_tab = None
+        self._order_chain_canvas = None
+        self._order_chain_inner = None
+        self._order_chain_window_id = None
+        self._order_chain_items = []
+        self._order_chain_end_indicator = None
+        self._order_unassigned_list = None
+        self._order_unassigned_row_ids = []
+        self._order_drag = None
+        self._order_drag_ghost = None
+        self._order_draft_row_ids = None
+        self._order_draft_start_order = 0
+        self._order_draft_dirty = False
+        self._order_finish_btn = None
+        self._order_discard_btn = None
+        self._legacy_run_order_audit = None
 
         self.title(f"文件结构（树状视图） · {workspace_name or award_name}")
         self.geometry("1080x680")
@@ -701,6 +813,722 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         tab_text = event.widget.tab(selected_tab, "text")
         if tab_text == "全局映射视图":
             self._refresh_global_mapping_tab()
+
+    def _on_main_tab_changed(self, event):
+        try:
+            selected_tab = event.widget.select()
+            tab_text = event.widget.tab(selected_tab, "text")
+        except Exception:
+            return
+        if tab_text == "顺序调整":
+            self._refresh_order_tab()
+
+    def _build_order_tab(self, parent):
+        header = tk.Frame(parent, bg=PALETTE["surface"])
+        header.pack(side="top", fill="x", padx=16, pady=(14, 8))
+        tk.Label(
+            header,
+            text="顺序调整",
+            bg=PALETTE["surface"],
+            fg=PALETTE["text"],
+            font=(FONT, 13, "bold"),
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            header,
+            text="拖动左侧链条中的代码即可换位；双击可移入/移出。调整完成后点击“完成调整并应用”。",
+            bg=PALETTE["surface"],
+            fg=PALETTE["muted"],
+            font=(FONT, 9),
+            anchor="w",
+        ).pack(anchor="w", pady=(3, 0))
+
+        split = tk.PanedWindow(
+            parent,
+            orient="horizontal",
+            bg=PALETTE["border"],
+            bd=0,
+            sashwidth=6,
+            sashrelief="flat",
+        )
+        split.pack(side="top", fill="both", expand=True, padx=16, pady=(0, 14))
+
+        chain_panel = tk.Frame(
+            split,
+            bg=PALETTE["panel"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        unassigned_panel = tk.Frame(
+            split,
+            bg=PALETTE["panel"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        split.add(chain_panel, stretch="always", minsize=520, width=790)
+        split.add(unassigned_panel, stretch="never", minsize=220, width=270)
+
+        chain_head = tk.Frame(chain_panel, bg=PALETTE["panel"])
+        chain_head.pack(side="top", fill="x", padx=12, pady=(10, 8))
+        tk.Label(
+            chain_head,
+            text="已分配顺序 · 执行链",
+            bg=PALETTE["panel"],
+            fg=PALETTE["secondary"],
+            font=(FONT, 10, "bold"),
+        ).pack(side="left")
+        self._order_chain_summary_var = tk.StringVar(value="")
+        tk.Label(
+            chain_head,
+            textvariable=self._order_chain_summary_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=(FONT, 9),
+        ).pack(side="right")
+        self._order_finish_btn = self._tk_button(
+            chain_head,
+            "完成调整并应用",
+            self._commit_order_draft,
+            primary=True,
+            small=True,
+        )
+        self._order_finish_btn.pack(side="right", padx=(8, 4))
+        self._order_discard_btn = self._tk_button(
+            chain_head,
+            "放弃本次调整",
+            self._discard_order_draft,
+            small=True,
+        )
+        self._order_discard_btn.pack(side="right", padx=4)
+
+        self._order_draft_status_var = tk.StringVar(value="当前顺序已同步到结构编辑。")
+        tk.Label(
+            chain_panel,
+            textvariable=self._order_draft_status_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=(FONT, 8),
+            anchor="w",
+        ).pack(side="top", fill="x", padx=12, pady=(0, 6))
+
+        chain_wrap = tk.Frame(chain_panel, bg=PALETTE["surface"])
+        chain_wrap.pack(side="top", fill="both", expand=True, padx=10, pady=(0, 10))
+        self._order_chain_canvas = tk.Canvas(
+            chain_wrap,
+            bg=PALETTE["surface"],
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+        )
+        chain_vsb = ttk.Scrollbar(
+            chain_wrap,
+            orient="vertical",
+            command=self._order_chain_canvas.yview,
+        )
+        self._order_chain_canvas.configure(yscrollcommand=chain_vsb.set)
+        chain_vsb.pack(side="right", fill="y")
+        self._order_chain_canvas.pack(side="left", fill="both", expand=True)
+        self._order_chain_inner = tk.Frame(self._order_chain_canvas, bg=PALETTE["surface"])
+        self._order_chain_window_id = self._order_chain_canvas.create_window(
+            (0, 0),
+            window=self._order_chain_inner,
+            anchor="nw",
+        )
+        self._order_chain_inner.bind("<Configure>", self._sync_order_chain_canvas, add="+")
+        self._order_chain_canvas.bind("<Configure>", self._sync_order_chain_canvas, add="+")
+        self._order_chain_canvas.bind("<MouseWheel>", self._on_order_chain_mousewheel, add="+")
+        self._order_chain_inner.bind("<MouseWheel>", self._on_order_chain_mousewheel, add="+")
+
+        right_head = tk.Frame(unassigned_panel, bg=PALETTE["panel"])
+        right_head.pack(side="top", fill="x", padx=10, pady=(10, 6))
+        tk.Label(
+            right_head,
+            text="未分配顺序",
+            bg=PALETTE["panel"],
+            fg=PALETTE["secondary"],
+            font=(FONT, 10, "bold"),
+        ).pack(side="left")
+        self._order_unassigned_summary_var = tk.StringVar(value="")
+        tk.Label(
+            right_head,
+            textvariable=self._order_unassigned_summary_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=(FONT, 9),
+        ).pack(side="right")
+
+        unassigned_wrap = tk.Frame(unassigned_panel, bg=PALETTE["surface"])
+        unassigned_wrap.pack(side="top", fill="both", expand=True, padx=10, pady=(0, 8))
+        self._order_unassigned_list = tk.Listbox(
+            unassigned_wrap,
+            selectmode="extended",
+            exportselection=False,
+            activestyle="none",
+            bg=PALETTE["surface"],
+            fg=PALETTE["text"],
+            selectbackground=PALETTE["accent"],
+            selectforeground="#FFFFFF",
+            highlightthickness=0,
+            bd=0,
+            font=(FONT, 9),
+        )
+        unassigned_vsb = ttk.Scrollbar(
+            unassigned_wrap,
+            orient="vertical",
+            command=self._order_unassigned_list.yview,
+        )
+        unassigned_hsb = ttk.Scrollbar(
+            unassigned_wrap,
+            orient="horizontal",
+            command=self._order_unassigned_list.xview,
+        )
+        self._order_unassigned_list.configure(
+            yscrollcommand=unassigned_vsb.set,
+            xscrollcommand=unassigned_hsb.set,
+        )
+        unassigned_hsb.pack(side="bottom", fill="x")
+        unassigned_vsb.pack(side="right", fill="y")
+        self._order_unassigned_list.pack(side="left", fill="both", expand=True, padx=4, pady=4)
+        self._order_unassigned_list.bind(
+            "<Double-Button-1>",
+            self._on_unassigned_double_click,
+            add="+",
+        )
+
+        assign_actions = tk.Frame(unassigned_panel, bg=PALETTE["panel"])
+        assign_actions.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        self._tk_button(
+            assign_actions,
+            "加入链尾",
+            self._assign_selected_order_rows,
+            primary=True,
+            small=True,
+        ).pack(fill="x")
+        tk.Label(
+            assign_actions,
+            text="可多选；先加入调整草稿，完成后统一应用。",
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=(FONT, 8),
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(5, 0))
+
+    def _sync_order_chain_canvas(self, _event=None):
+        canvas = self._order_chain_canvas
+        inner = self._order_chain_inner
+        if not canvas or not inner:
+            return
+        try:
+            canvas.itemconfigure(
+                self._order_chain_window_id,
+                width=max(1, canvas.winfo_width()),
+            )
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_order_chain_mousewheel(self, event):
+        if not self._order_chain_canvas:
+            return
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta:
+            self._order_chain_canvas.yview_scroll(-1 if delta > 0 else 1, "units")
+        return "break"
+
+    def _order_code_entries(self, use_draft=False):
+        entries = []
+        if not self.model:
+            return [], []
+        for ri, row in enumerate(self.rows):
+            if self.model.cell(row, "代码/说明") != "代码":
+                continue
+            filename = self.model.cell(row, "相应代码和说明文件") or "（未命名代码）"
+            row_id = self._row_id(row)
+            if not row_id:
+                continue
+            step_value = _clean(self._effective_step_for_row(ri)) or "未分配"
+            stem = os.path.splitext(filename)[0] or filename
+            label = f"step_{step_value}_{stem}"
+            entry = {
+                "ri": ri,
+                "row_id": row_id,
+                "order": _parse_run_order_value(self.model.cell(row, "运行顺序")),
+                "step": step_value,
+                "filename": filename,
+                "label": label,
+            }
+            entries.append(entry)
+        assigned = [entry for entry in entries if entry["order"] is not None]
+        unassigned = [entry for entry in entries if entry["order"] is None]
+        assigned.sort(key=lambda item: (item["order"], item["ri"]))
+
+        def unassigned_key(item):
+            parts = re.split(r"(\d+)", item["step"])
+            step_key = tuple((0, int(p)) if p.isdigit() else (1, p.lower()) for p in parts)
+            return step_key, item["filename"].lower(), item["ri"]
+
+        if use_draft:
+            entry_by_id = {entry["row_id"]: entry for entry in entries}
+            if self._order_draft_row_ids is None or not self._order_draft_dirty:
+                self._order_draft_row_ids = [entry["row_id"] for entry in assigned]
+                self._order_draft_start_order = 0
+            else:
+                self._order_draft_row_ids = [
+                    row_id
+                    for row_id in self._order_draft_row_ids
+                    if row_id in entry_by_id
+                ]
+            draft_ids = set(self._order_draft_row_ids)
+            draft_assigned = []
+            for offset, row_id in enumerate(self._order_draft_row_ids):
+                entry = dict(entry_by_id[row_id])
+                entry["order"] = self._order_draft_start_order + offset
+                draft_assigned.append(entry)
+            unassigned = [
+                entry
+                for entry in entries
+                if entry["row_id"] not in draft_ids
+            ]
+            assigned = draft_assigned
+
+        unassigned.sort(key=unassigned_key)
+        return assigned, unassigned
+
+    def _refresh_order_tab(self):
+        if not self.model or not self._order_chain_inner or not self._order_unassigned_list:
+            return
+        self._cancel_order_drag()
+        for child in self._order_chain_inner.winfo_children():
+            child.destroy()
+        self._order_chain_items = []
+        self._order_chain_end_indicator = None
+
+        assigned, unassigned = self._order_code_entries(use_draft=True)
+        self._order_chain_summary_var.set(f"{len(assigned)} 项")
+        self._order_unassigned_summary_var.set(f"{len(unassigned)} 项")
+        draft_state = "normal" if self._order_draft_dirty else "disabled"
+        if self._order_finish_btn:
+            self._order_finish_btn.config(state=draft_state)
+        if self._order_discard_btn:
+            self._order_discard_btn.config(state=draft_state)
+        if self._order_draft_dirty:
+            self._order_draft_status_var.set(
+                "当前为调整草稿；点击“完成调整并应用”后才会更新到结构编辑。"
+            )
+        else:
+            self._order_draft_status_var.set("当前顺序已同步到结构编辑。")
+
+        if assigned:
+            for index, entry in enumerate(assigned):
+                self._create_order_chain_item(index, entry, index == len(assigned) - 1)
+            self._order_chain_end_indicator = tk.Frame(
+                self._order_chain_inner,
+                bg=PALETTE["surface"],
+                height=3,
+            )
+            self._order_chain_end_indicator.pack(fill="x", padx=(74, 14), pady=(0, 6))
+        else:
+            empty = tk.Frame(self._order_chain_inner, bg=PALETTE["surface"])
+            empty.pack(fill="both", expand=True, padx=16, pady=36)
+            tk.Label(
+                empty,
+                text="当前执行链为空",
+                bg=PALETTE["surface"],
+                fg=PALETTE["secondary"],
+                font=(FONT, 11, "bold"),
+            ).pack()
+            tk.Label(
+                empty,
+                text="从右侧双击代码，或选中后点击“加入链尾”。",
+                bg=PALETTE["surface"],
+                fg=PALETTE["muted"],
+                font=(FONT, 9),
+            ).pack(pady=(5, 0))
+
+        self._order_unassigned_list.delete(0, "end")
+        self._order_unassigned_row_ids = []
+        for entry in unassigned:
+            self._order_unassigned_list.insert("end", entry["label"])
+            self._order_unassigned_row_ids.append(entry["row_id"])
+        if not unassigned:
+            self._order_unassigned_list.insert("end", "（所有代码均已分配）")
+            try:
+                self._order_unassigned_list.itemconfig(0, fg=PALETTE["muted"])
+            except Exception:
+                pass
+        self.after_idle(self._sync_order_chain_canvas)
+
+    def _create_order_chain_item(self, index, entry, is_last):
+        wrapper = tk.Frame(self._order_chain_inner, bg=PALETTE["surface"])
+        wrapper.pack(fill="x")
+        indicator = tk.Frame(wrapper, bg=PALETTE["surface"], height=3)
+        indicator.pack(fill="x", padx=(74, 14), pady=(3, 1))
+
+        row = tk.Frame(wrapper, bg=PALETTE["surface"])
+        row.pack(fill="x")
+        rail = tk.Frame(row, bg=PALETTE["surface"], width=72)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+        tk.Label(
+            rail,
+            text=str(entry["order"]),
+            bg=PALETTE["surface"],
+            fg=PALETTE["secondary"],
+            font=(FONT, 11, "bold"),
+        ).pack(pady=(11, 0))
+        if not is_last:
+            tk.Label(
+                rail,
+                text="│",
+                bg=PALETTE["surface"],
+                fg=PALETTE["border"],
+                font=("Consolas", 13),
+            ).pack(fill="y", expand=True)
+
+        card = tk.Frame(
+            row,
+            bg=PALETTE["input_bg"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            cursor="fleur",
+        )
+        card.pack(side="left", fill="x", expand=True, padx=(2, 14), pady=(2, 6), ipady=3)
+        handle = tk.Label(
+            card,
+            text="≡",
+            bg=PALETTE["input_bg"],
+            fg=PALETTE["muted"],
+            font=(FONT, 14, "bold"),
+            cursor="fleur",
+            padx=10,
+        )
+        handle.pack(side="left", fill="y")
+        title = tk.Label(
+            card,
+            text=entry["label"],
+            bg=PALETTE["input_bg"],
+            fg=PALETTE["text"],
+            font=(FONT, 10, "bold"),
+            anchor="w",
+            cursor="fleur",
+        )
+        title.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
+        remove = self._tk_button(
+            card,
+            "移出",
+            lambda rid=entry["row_id"]: self._unassign_order_row(rid),
+            small=True,
+        )
+        remove.pack(side="right", padx=(4, 8), pady=5)
+
+        item = {
+            "wrapper": wrapper,
+            "indicator": indicator,
+            "card": card,
+            "handle": handle,
+            "title": title,
+            "entry": entry,
+        }
+        self._order_chain_items.append(item)
+        for widget in (card, handle, title):
+            widget.bind(
+                "<ButtonPress-1>",
+                lambda event, idx=index: self._start_order_drag(idx, event),
+                add="+",
+            )
+            widget.bind("<B1-Motion>", self._move_order_drag, add="+")
+            widget.bind("<ButtonRelease-1>", self._finish_order_drag, add="+")
+            widget.bind(
+                "<Double-Button-1>",
+                lambda _event, rid=entry["row_id"]: self._unassign_order_row(rid),
+                add="+",
+            )
+        for widget in (wrapper, indicator, row, rail, card, handle, title, remove):
+            widget.bind("<MouseWheel>", self._on_order_chain_mousewheel, add="+")
+
+    def _create_order_drag_ghost(self, text_value):
+        self._destroy_order_drag_ghost()
+        try:
+            ghost = tk.Toplevel(self)
+            ghost.overrideredirect(True)
+            try:
+                ghost.attributes("-topmost", True)
+                ghost.attributes("-alpha", 0.78)
+            except Exception:
+                pass
+            frame = tk.Frame(
+                ghost,
+                bg=PALETTE["accent_tint"],
+                highlightthickness=1,
+                highlightbackground=PALETTE["accent"],
+            )
+            frame.pack(fill="both", expand=True)
+            tk.Label(
+                frame,
+                text=f"≡  {text_value}",
+                bg=PALETTE["accent_tint"],
+                fg=PALETTE["text"],
+                font=(FONT, 10, "bold"),
+                anchor="w",
+                justify="left",
+                wraplength=520,
+                padx=14,
+                pady=10,
+            ).pack(fill="both", expand=True)
+            ghost.update_idletasks()
+            self._order_drag_ghost = ghost
+        except Exception:
+            self._order_drag_ghost = None
+
+    def _move_order_drag_ghost(self, x_root, y_root):
+        ghost = self._order_drag_ghost
+        if not ghost:
+            return
+        try:
+            ghost.geometry(f"+{int(x_root) + 18}+{int(y_root) + 14}")
+        except Exception:
+            pass
+
+    def _destroy_order_drag_ghost(self):
+        if self._order_drag_ghost:
+            try:
+                self._order_drag_ghost.destroy()
+            except Exception:
+                pass
+        self._order_drag_ghost = None
+
+    def _start_order_drag(self, index, event):
+        if not (0 <= index < len(self._order_chain_items)):
+            return
+        self._order_drag = {
+            "from_index": index,
+            "drop_index": index,
+            "start_x": int(event.x_root),
+            "start_y": int(event.y_root),
+            "active": False,
+        }
+
+    def _activate_order_drag(self, event):
+        if not self._order_drag or self._order_drag.get("active"):
+            return
+        index = self._order_drag["from_index"]
+        entry = self._order_chain_items[index]["entry"]
+        self._order_drag["active"] = True
+        item = self._order_chain_items[index]
+        item["card"].configure(bg=PALETTE["accent_soft"])
+        item["handle"].configure(bg=PALETTE["accent_soft"], fg=PALETTE["border"])
+        item["title"].configure(bg=PALETTE["accent_soft"], fg=PALETTE["muted"])
+        self._create_order_drag_ghost(entry["label"])
+        self._move_order_drag_ghost(event.x_root, event.y_root)
+        self._set_order_drop_indicator(index)
+
+    def _order_drop_index_from_pointer(self, y_root):
+        for index, item in enumerate(self._order_chain_items):
+            card = item["card"]
+            try:
+                midpoint = card.winfo_rooty() + card.winfo_height() / 2
+            except Exception:
+                continue
+            if y_root < midpoint:
+                return index
+        return len(self._order_chain_items)
+
+    def _auto_scroll_order_chain(self, y_root):
+        canvas = self._order_chain_canvas
+        if not canvas:
+            return
+        try:
+            top = canvas.winfo_rooty()
+            bottom = top + canvas.winfo_height()
+            if y_root < top + 34:
+                canvas.yview_scroll(-1, "units")
+            elif y_root > bottom - 34:
+                canvas.yview_scroll(1, "units")
+        except Exception:
+            pass
+
+    def _set_order_drop_indicator(self, drop_index):
+        for item in self._order_chain_items:
+            item["indicator"].configure(bg=PALETTE["surface"])
+        if self._order_chain_end_indicator:
+            self._order_chain_end_indicator.configure(bg=PALETTE["surface"])
+        if 0 <= drop_index < len(self._order_chain_items):
+            self._order_chain_items[drop_index]["indicator"].configure(bg=PALETTE["accent"])
+        elif drop_index == len(self._order_chain_items) and self._order_chain_end_indicator:
+            self._order_chain_end_indicator.configure(bg=PALETTE["accent"])
+
+    def _move_order_drag(self, event):
+        if not self._order_drag:
+            return
+        if not self._order_drag.get("active"):
+            dx = int(event.x_root) - self._order_drag.get("start_x", int(event.x_root))
+            dy = int(event.y_root) - self._order_drag.get("start_y", int(event.y_root))
+            if dx * dx + dy * dy < 25:
+                return
+            self._activate_order_drag(event)
+        self._auto_scroll_order_chain(event.y_root)
+        drop_index = self._order_drop_index_from_pointer(event.y_root)
+        self._order_drag["drop_index"] = drop_index
+        self._set_order_drop_indicator(drop_index)
+        self._move_order_drag_ghost(event.x_root, event.y_root)
+        return "break"
+
+    def _finish_order_drag(self, _event=None):
+        drag = dict(self._order_drag or {})
+        from_index = drag.get("from_index")
+        drop_index = drag.get("drop_index")
+        row_ids = [item["entry"]["row_id"] for item in self._order_chain_items]
+        self._cancel_order_drag()
+        if not drag.get("active") or from_index is None or drop_index is None:
+            return "break"
+        if not (0 <= from_index < len(row_ids)):
+            return "break"
+        moved_id = row_ids.pop(from_index)
+        if drop_index > from_index:
+            drop_index -= 1
+        drop_index = max(0, min(int(drop_index), len(row_ids)))
+        row_ids.insert(drop_index, moved_id)
+        if drop_index == from_index:
+            return "break"
+        self._update_order_draft(row_ids)
+        return "break"
+
+    def _cancel_order_drag(self):
+        drag = self._order_drag or {}
+        from_index = drag.get("from_index")
+        if drag.get("active") and isinstance(from_index, int) and 0 <= from_index < len(self._order_chain_items):
+            item = self._order_chain_items[from_index]
+            try:
+                item["card"].configure(bg=PALETTE["input_bg"])
+                item["handle"].configure(bg=PALETTE["input_bg"], fg=PALETTE["muted"])
+                item["title"].configure(bg=PALETTE["input_bg"], fg=PALETTE["text"])
+            except Exception:
+                pass
+        self._set_order_drop_indicator(-1)
+        self._destroy_order_drag_ghost()
+        self._order_drag = None
+
+    def _update_order_draft(self, row_ids):
+        if not self.model:
+            return
+        unique_ids = []
+        seen = set()
+        for row_id in row_ids:
+            row = self._find_row_by_id(row_id)
+            if (
+                row_id
+                and row_id not in seen
+                and row is not None
+                and self.model.cell(row, "代码/说明") == "代码"
+            ):
+                seen.add(row_id)
+                unique_ids.append(row_id)
+        self._order_draft_row_ids = unique_ids
+        self._order_draft_start_order = 0
+        self._order_draft_dirty = True
+        self.status_var.set("顺序调整为草稿状态；点击“完成调整并应用”后才会写入。")
+        self._refresh_order_tab()
+
+    def _apply_order_chain(self, row_ids, status_message):
+        if not self.model:
+            return
+        unique_ids = []
+        seen = set()
+        for row_id in row_ids:
+            if row_id and row_id not in seen:
+                row = self._find_row_by_id(row_id)
+                if row is not None and self.model.cell(row, "代码/说明") == "代码":
+                    seen.add(row_id)
+                    unique_ids.append(row_id)
+
+        start_order = 0
+
+        self._push_undo()
+        assigned_set = set(unique_ids)
+        for row in self.rows:
+            if self.model.cell(row, "代码/说明") != "代码":
+                continue
+            row_id = self._row_id(row)
+            if row_id not in assigned_set and _parse_run_order_value(self.model.cell(row, "运行顺序")) is not None:
+                self.model._set_on(row, "运行顺序", None)
+        for offset, row_id in enumerate(unique_ids):
+            row = self._find_row_by_id(row_id)
+            if row is not None:
+                self.model._set_on(row, "运行顺序", str(start_order + offset))
+        self.model.normalize_run_orders(rebuild=False)
+        self._sort_rows()
+        self.model.rebuild()
+        # 当前链已经被用户明确确认并写入，打开文件时记录的旧缺口不再有效。
+        self._legacy_run_order_audit = None
+        self._mark_dirty(status_message)
+        self._log("顺序链已更新：" + " → ".join(
+            self.model.cell(self._find_row_by_id(row_id), "相应代码和说明文件")
+            for row_id in unique_ids
+            if self._find_row_by_id(row_id) is not None
+        ))
+        self.populate_tree()
+        self._update_undo_buttons()
+
+    def _commit_order_draft(self, switch_to_editor=True):
+        if not self._order_draft_dirty:
+            self.status_var.set("顺序没有待应用的调整。")
+            return False
+        row_ids = list(self._order_draft_row_ids or [])
+        self._order_draft_dirty = False
+        self._order_draft_row_ids = None
+        self._apply_order_chain(
+            row_ids,
+            "顺序调整已应用到结构编辑（未保存）",
+        )
+        if switch_to_editor and self.main_notebook and self._editor_tab:
+            try:
+                self.main_notebook.select(self._editor_tab)
+            except Exception:
+                pass
+        return True
+
+    def _discard_order_draft(self):
+        self._cancel_order_drag()
+        self._order_draft_row_ids = None
+        self._order_draft_start_order = 0
+        self._order_draft_dirty = False
+        self._refresh_order_tab()
+        self.status_var.set("已放弃本次顺序调整；结构编辑中的顺序未改变。")
+
+    def _unassign_order_row(self, row_id):
+        self._cancel_order_drag()
+        assigned, _unassigned = self._order_code_entries(use_draft=True)
+        row_ids = [entry["row_id"] for entry in assigned if entry["row_id"] != row_id]
+        if len(row_ids) == len(assigned):
+            return "break"
+        self._update_order_draft(row_ids)
+        return "break"
+
+    def _assign_order_rows(self, row_ids):
+        assigned, _unassigned = self._order_code_entries(use_draft=True)
+        current_ids = [entry["row_id"] for entry in assigned]
+        append_ids = [row_id for row_id in row_ids if row_id and row_id not in current_ids]
+        if not append_ids:
+            return
+        self._update_order_draft(current_ids + append_ids)
+
+    def _assign_selected_order_rows(self):
+        if not self._order_unassigned_list:
+            return
+        selected_ids = []
+        for index in self._order_unassigned_list.curselection():
+            if 0 <= index < len(self._order_unassigned_row_ids):
+                selected_ids.append(self._order_unassigned_row_ids[index])
+        self._assign_order_rows(selected_ids)
+
+    def _on_unassigned_double_click(self, event):
+        if not self._order_unassigned_list or not self._order_unassigned_row_ids:
+            return "break"
+        index = self._order_unassigned_list.nearest(event.y)
+        if 0 <= index < len(self._order_unassigned_row_ids):
+            self._assign_order_rows([self._order_unassigned_row_ids[index]])
+        return "break"
 
     def _refresh_global_mapping_tab(self):
         if not hasattr(self, "mapping_text"):
@@ -866,12 +1694,19 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                  bg=PALETTE["accent_tint"], fg="#2c3a63", font=(FONT, 9), anchor="w",
                  padx=16, pady=6).pack(fill="x")
 
-        # 主体：左树 右表单
+        # 主体：结构编辑 + 独立的顺序调整工作台
         body = tk.Frame(self, bg=PALETTE["app_bg"])
         body.pack(side="top", fill="both", expand=True)
+        self.main_notebook = ttk.Notebook(body)
+        self.main_notebook.pack(fill="both", expand=True)
+        self._editor_tab = tk.Frame(self.main_notebook, bg=PALETTE["app_bg"])
+        self.main_notebook.add(self._editor_tab, text="结构编辑")
+        self._order_tab = tk.Frame(self.main_notebook, bg=PALETTE["surface"])
+        self.main_notebook.add(self._order_tab, text="顺序调整")
+        self.main_notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed, add="+")
 
         # 左
-        left = tk.Frame(body, bg=PALETTE["panel"], width=520)
+        left = tk.Frame(self._editor_tab, bg=PALETTE["panel"], width=520)
         left.pack(side="left", fill="both")
         left.pack_propagate(False)
         ltool = tk.Frame(left, bg=PALETTE["panel"])
@@ -921,7 +1756,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.tree.bind("<BackSpace>", lambda e: self.on_delete())
 
         # 右侧（用 Notebook 包装）
-        self.notebook = ttk.Notebook(body)
+        self.notebook = ttk.Notebook(self._editor_tab)
         self.notebook.pack(side="left", fill="both", expand=True)
 
         right = tk.Frame(self.notebook, bg=PALETTE["surface"])
@@ -999,6 +1834,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         )
         self._detail_action_btn.pack(side="right", padx=16, pady=10)
         self._detail_action_btn.config(state="disabled")
+        self._build_order_tab(self._order_tab)
 
         # 底部状态
         self.status_var = tk.StringVar(value="")
@@ -1015,6 +1851,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self.bind("<Control-X>", lambda e: self.on_cut())
         self.bind("<Control-v>", lambda e: self.on_paste())
         self.bind("<Control-V>", lambda e: self.on_paste())
+        self.bind("<Escape>", lambda _e: self._cancel_order_drag(), add="+")
         self.bind_all("<Shift-Return>", self._request_detail_apply, add="+")
         self.bind_all("<Shift-KP_Enter>", self._request_detail_apply, add="+")
 
@@ -1246,6 +2083,13 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._sort_rows()
         self.model = FileTreeModel(self.header, self.rows)
         self.model.ensure_row_ids()
+        initial_order_audit = self._collect_run_order_save_audit()
+        self._legacy_run_order_audit = (
+            copy.deepcopy(initial_order_audit)
+            if self._run_order_issue_lines(initial_order_audit)
+            else None
+        )
+        normalized_orders = self.model.normalize_run_orders()
         # 重建 doc_to_codes 和绑定 tokens
         self._doc_to_codes = self._build_doc_to_codes_from_rows()
         self._recompute_and_write_binding_tokens()
@@ -1263,7 +2107,14 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._redo_stack.clear()
         self.populate_tree()
         self._update_undo_buttons()
-        self.status_var.set(f"已加载 {len(self.rows)} 行 · 工作区：{self.award_name}")
+        if normalized_orders:
+            self.dirty = True
+            self.status_var.set(
+                f"已加载 {len(self.rows)} 行 · 已自动补齐运行顺序（{normalized_orders} 处，未保存）"
+            )
+            self._log(f"加载时发现运行顺序空位或非法值，已自动连续化 {normalized_orders} 处。")
+        else:
+            self.status_var.set(f"已加载 {len(self.rows)} 行 · 工作区：{self.award_name}")
 
     def _row_id(self, row):
         if not self.model:
@@ -1600,6 +2451,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._insert_outputs(root, "")
         self._first_populate = False
         self._preserve_manual_open_state = False
+        self._refresh_order_tab()
 
     def _folder_open_state(self, path):
         # 首次加载：仅展开顶层；之后：沿用用户记忆的展开状态
@@ -1678,8 +2530,12 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         self._redo_stack.clear()
 
     def _restore(self, snapshot):
+        self._order_draft_row_ids = None
+        self._order_draft_start_order = 0
+        self._order_draft_dirty = False
         self.rows[:] = copy.deepcopy(snapshot)   # 原地替换内容（model 共享同一对象）
         self._sort_rows()
+        self.model.normalize_run_orders(rebuild=False)
         self.model.rebuild()
         # 重建 doc_to_codes 映射关系（重要！每次 rows 变化后都要这样做！）
         self._doc_to_codes = self._build_doc_to_codes_from_rows()
@@ -2383,6 +3239,122 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             self._detail_state[state_key] = payload
         return payload
 
+    def _collect_run_order_save_audit(self):
+        """收集保存前的未分配代码、空号和重复号，不修改任何数据。"""
+        result = {
+            "unassigned": [],
+            "missing": [],
+            "missing_details": [],
+            "duplicates": [],
+        }
+        if not self.model:
+            return result
+
+        by_order = {}
+        for ri, row in enumerate(self.rows):
+            if self.model.cell(row, "代码/说明") != "代码":
+                continue
+            filename = self.model.cell(row, "相应代码和说明文件") or "（未命名代码）"
+            step_value = _clean(self._effective_step_for_row(ri)) or "未分配"
+            stem = os.path.splitext(filename)[0] or filename
+            label = f"step_{step_value}_{stem}"
+            order_text = self.model.cell(row, "运行顺序")
+            order_num = _parse_run_order_value(order_text)
+            if order_num is not None:
+                by_order.setdefault(order_num, []).append(label)
+                continue
+
+            code_subdir = _clean(self.model.cell(row, "代码子文件夹")).replace("\\", "/").strip("/")
+            disabled_note = _clean(self.model.cell(row, "备注"))
+            is_update_code = code_subdir == "更新代码" or code_subdir.startswith("更新代码/")
+            if not is_update_code and not disabled_note:
+                result["unassigned"].append({
+                    "label": label,
+                    "order_text": order_text,
+                    "code_subdir": code_subdir,
+                })
+
+        actual_orders = sorted(by_order)
+        if actual_orders:
+            start_order = 0
+            result["missing"] = [
+                order_num
+                for order_num in range(start_order, actual_orders[-1] + 1)
+                if order_num not in by_order
+            ]
+            for missing_order in result["missing"]:
+                previous_orders = [order_num for order_num in actual_orders if order_num < missing_order]
+                next_orders = [order_num for order_num in actual_orders if order_num > missing_order]
+                if previous_orders:
+                    previous_order = previous_orders[-1]
+                    previous_text = f"[{previous_order}] {' / '.join(by_order[previous_order])}"
+                else:
+                    previous_text = "链首"
+                if next_orders:
+                    next_order = next_orders[0]
+                    next_text = f"[{next_order}] {' / '.join(by_order[next_order])}"
+                else:
+                    next_text = "链尾"
+                result["missing_details"].append(
+                    f"缺少顺序 {missing_order}：{previous_text} → {next_text}"
+                )
+
+        for order_num in actual_orders:
+            owners = by_order[order_num]
+            if len(owners) > 1:
+                result["duplicates"].append(
+                    f"顺序 {order_num} 重复：{' / '.join(owners)}"
+                )
+        return result
+
+    def _run_order_issue_lines(self, audit):
+        lines = list((audit or {}).get("missing_details") or [])
+        lines.extend((audit or {}).get("duplicates") or [])
+        return lines
+
+    def _format_warning_items(self, items, limit=30):
+        items = [str(item) for item in items if str(item)]
+        visible = items[:limit]
+        text = "\n".join(f"- {item}" for item in visible)
+        if len(items) > limit:
+            text += f"\n- ……另有 {len(items) - limit} 项"
+        return text
+
+    def _confirm_run_order_save_checks(self):
+        current_audit = self._collect_run_order_save_audit()
+        legacy_lines = self._run_order_issue_lines(self._legacy_run_order_audit)
+        current_lines = self._run_order_issue_lines(current_audit)
+        issue_lines = []
+        seen = set()
+        for line in legacy_lines + current_lines:
+            if line not in seen:
+                seen.add(line)
+                issue_lines.append(line)
+
+        if issue_lines and messagebox:
+            message = (
+                "检测到运行顺序存在遗留空位或重复号：\n"
+                + self._format_warning_items(issue_lines)
+                + "\n\n继续后将自动按当前代码先后补齐为连续顺序，并写回文件。是否继续？"
+            )
+            if not messagebox.askyesno("运行顺序将自动补位", message, parent=self):
+                self.status_var.set("保存已取消：尚未确认运行顺序自动补位。")
+                self._log("保存已取消：用户拒绝自动补齐运行顺序。")
+                return False
+
+        unassigned_labels = [item["label"] for item in current_audit["unassigned"]]
+        if unassigned_labels and messagebox:
+            message = (
+                "以下非“更新代码”代码尚未分配运行顺序：\n"
+                + self._format_warning_items(unassigned_labels)
+                + "\n\n这些代码不会进入顺序执行链。是否仍要继续保存？"
+            )
+            if not messagebox.askyesno("存在未分配顺序的代码", message, parent=self):
+                self.status_var.set("保存已取消：仍有代码未分配运行顺序。")
+                self._log("保存已取消：用户未确认未分配顺序代码警告。")
+                return False
+        return True
+
     def _validate_before_save(self):
         duplicate_steps = []
         seen_steps = {}
@@ -2399,6 +3371,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
 
         duplicate_orders = []
         seen_orders = {}
+        order_numbers = []
         path_warnings = []
         
         for ri, row in enumerate(self.rows):
@@ -2420,15 +3393,28 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             if file_type != "代码":
                 continue
             order_value = _clean(self.model.cell(row, "运行顺序"))
-            if not order_value or not order_value.isdigit():
+            order_num = _parse_run_order_value(order_value)
+            if order_num is None:
                 continue
-            step_value = _clean(self._effective_step_for_row(ri))
-            key = (step_value, order_value)
-            seen_orders.setdefault(key, []).append(self.model.cell(row, "相应代码和说明文件") or f"第{ri + 2}行")
-        for (step_value, order_value), owners in seen_orders.items():
+            order_numbers.append(order_num)
+            seen_orders.setdefault(order_num, []).append(
+                self.model.cell(row, "相应代码和说明文件") or f"第{ri + 2}行"
+            )
+        for order_value, owners in seen_orders.items():
             if len(owners) > 1:
-                step_text = step_value or "未分配步骤"
-                duplicate_orders.append(f"步骤 {step_text} 的运行顺序 {order_value} 重复：{'、'.join(owners)}")
+                duplicate_orders.append(f"运行顺序 {order_value} 重复：{'、'.join(owners)}")
+
+        if order_numbers:
+            actual_orders = sorted(set(order_numbers))
+            start_order = 0
+            expected_orders = list(range(start_order, start_order + len(actual_orders)))
+            if actual_orders != expected_orders:
+                duplicate_orders.append(
+                    "运行顺序存在空位：当前为 "
+                    + ",".join(str(v) for v in actual_orders)
+                    + "；应连续为 "
+                    + ",".join(str(v) for v in expected_orders)
+                )
 
         duplicate_saved_names = []
         for conflict in self._collect_saved_name_conflicts():
@@ -2450,46 +3436,14 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             if self.model.cell(row, "代码/说明") != "代码":
                 continue
             current_step = _clean(self._effective_step_for_row(ri))
-            order_value = _clean(self.model.cell(row, "运行顺序"))
-            if not order_value.isdigit():
+            order_value = _parse_run_order_value(self.model.cell(row, "运行顺序"))
+            if order_value is None:
                 continue
             step_text = current_step or "无步骤"
             filename = self.model.cell(row, "相应代码和说明文件") or f"第{ri + 2}行"
             label = f"[{step_text}] {filename}"
-            usage.setdefault(int(order_value), []).append(label)
+            usage.setdefault(order_value, []).append(label)
         return usage
-
-    def _shift_run_orders_for_insert(self, exclude_ri, start_order):
-        affected = []
-        for ri, row in enumerate(self.rows):
-            if ri == exclude_ri:
-                continue
-            if self.model.cell(row, "代码/说明") != "代码":
-                continue
-            current_step = _clean(self._effective_step_for_row(ri))
-            order_value = _clean(self.model.cell(row, "运行顺序"))
-            if not order_value.isdigit():
-                continue
-            order_num = int(order_value)
-            if order_num >= start_order:
-                affected.append((ri, order_num))
-        for ri, order_num in sorted(affected, key=lambda item: item[1], reverse=True):
-            self.model._set_on(self.rows[ri], "运行顺序", str(order_num + 1))
-        if affected:
-            self.model.rebuild()
-        return len(affected)
-
-    def _auto_insert_run_order_if_needed(self, ri, target_order):
-        if not str(target_order).isdigit():
-            return True
-        usage = self._collect_run_order_usage(ri)
-        owners = usage.get(int(target_order), [])
-        if not owners:
-            return True
-        owners_text = "、".join(self._usage_owner_text(owner) for owner in owners)
-        shifted = self._shift_run_orders_for_insert(ri, int(target_order))
-        self._log(f"运行顺序 {target_order} 已占用：{owners_text}；已自动插入并顺延 {shifted} 项。")
-        return True
 
     def _collect_step_usage(self, exclude_path=None):
         excluded = tuple(exclude_path or ())
@@ -2737,7 +3691,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
                     f["运行顺序"],
                     self._collect_run_order_usage(ri),
                     RUN_ORDER_LIMIT,
-                    "可选 （空白）、0-100；说明不写顺序，代码可使用 0 作为合法顺序。",
+                    "可选（空白）、0-100；顺序链固定从 0 开始，保存及删除后会自动压紧为连续链。",
                     empty_hint="当前序号空闲。",
                     state_key="order_var",
                     allow_blank=True,
@@ -2878,14 +3832,13 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             # 只有代码类型才设置运行顺序和单次运行提示
             if type_var.get() == "代码" and "order_field" in self._detail_state:
                 update_fields["运行顺序"] = self._detail_state["order_field"]["get"]()
-                if update_fields["运行顺序"] and not self._auto_insert_run_order_if_needed(ri, update_fields["运行顺序"]):
-                    return
                 run_once_payload = self._detail_state.get("run_once_field") or {}
                 update_fields["只运行一次"] = _normalize_yes_no((run_once_payload.get("var").get() if run_once_payload.get("var") else "否"))
             else:
                 update_fields["运行顺序"] = ""
                 update_fields["只运行一次"] = ""
             self.model.edit_file(ri, update_fields)
+            self._legacy_run_order_audit = None
             self._sort_rows()
             # 重建 doc_to_codes 映射关系（重要！每次 rows 变化后都要这样做！）
             self._doc_to_codes = self._build_doc_to_codes_from_rows()
@@ -3267,6 +4220,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             delete_ri = self._find_row_index_by_id(row_id)
             if delete_ri != -1:
                 self.model.delete_file(delete_ri)
+        self._legacy_run_order_audit = None
         self._sort_rows()
         self._doc_to_codes = self._build_doc_to_codes_from_rows()
         self._recompute_and_write_binding_tokens()
@@ -3300,7 +4254,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             if not current_dir or current_dir in visited:
                 break
             visited.add(current_dir)
-            runner_path = os.path.join(current_dir, "step_0_前期准备", "运行此文件.py")
+            runner_path = os.path.join(current_dir, "step_0_前期准备", "setup.py")
             if os.path.isfile(runner_path):
                 return runner_path
             parent_dir = os.path.dirname(current_dir)
@@ -3447,23 +4401,23 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             try:
                 result = self._run_workspace_script_sync(runner_path, workspace_root)
             except Exception as exc:
-                self._log(f"执行 step_0_前期准备/运行此文件.py 失败：{exc}")
+                self._log(f"执行 step_0_前期准备/setup.py 失败：{exc}")
                 self.after(0, lambda: self._finish_post_save_sequence(
                     {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
-                    {"status": "failed", "failed_step": "step_0_前期准备/运行此文件.py", "returncode": "", "output_preview": str(exc)},
+                    {"status": "failed", "failed_step": "step_0_前期准备/setup.py", "returncode": "", "output_preview": str(exc)},
                 ))
                 return
             step0_preview = self._build_process_output_preview(result, tail_lines=12)
             if step0_preview:
                 self._log("step_0 输出摘要：\n" + step0_preview)
             if result.returncode != 0:
-                self._log(f"step_0_前期准备/运行此文件.py 执行失败，退出码：{result.returncode}")
+                self._log(f"step_0_前期准备/setup.py 执行失败，退出码：{result.returncode}")
                 self.after(0, lambda: self._finish_post_save_sequence(
                     {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
-                    {"status": "failed", "failed_step": "step_0_前期准备/运行此文件.py", "returncode": result.returncode, "output_preview": self._build_process_output_preview(result)},
+                    {"status": "failed", "failed_step": "step_0_前期准备/setup.py", "returncode": result.returncode, "output_preview": self._build_process_output_preview(result)},
                 ))
                 return
-            self._log("step_0_前期准备/运行此文件.py 执行完成。")
+            self._log("step_0_前期准备/setup.py 执行完成。")
         self.after(0, lambda: self._finish_post_save_sequence(
             {"update_script_path": update_script_path, "runner_path": runner_path, "started": True},
             {"status": "success"},
@@ -3473,7 +4427,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
         update_script_path = self._find_workspace_update_all_code()
         runner_path = self._find_workspace_step0_runner()
         if not update_script_path and not runner_path:
-            self._log("保存后未找到 update_all_code.py 或 step_0_前期准备/运行此文件.py，跳过自动触发。")
+            self._log("保存后未找到 update_all_code.py 或 step_0_前期准备/setup.py，跳过自动触发。")
             post_save_info = {"update_script_path": "", "runner_path": "", "started": False}
             self.after(0, lambda: self._finish_post_save_sequence(post_save_info, {"status": "success"}))
             return post_save_info
@@ -3491,7 +4445,25 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
     def save(self):
         try:
             if self.model:
+                if self._order_draft_dirty:
+                    if messagebox and not messagebox.askyesno(
+                        "顺序调整尚未完成",
+                        "“顺序调整”中还有未应用的草稿。\n\n是否先完成调整、写入结构编辑并继续保存？",
+                        parent=self,
+                    ):
+                        self.status_var.set("保存已取消：顺序调整草稿尚未应用。")
+                        self._log("保存已取消：用户未应用顺序调整草稿。")
+                        return
+                    self._commit_order_draft(switch_to_editor=False)
                 self.model.ensure_row_ids()
+                if not self._confirm_run_order_save_checks():
+                    return
+                normalized_orders = self.model.normalize_run_orders()
+                if normalized_orders:
+                    self._sort_rows()
+                    self.model.rebuild()
+                    self.populate_tree()
+                    self._log(f"保存前已自动补齐运行顺序 {normalized_orders} 处。")
             path_warnings = self._validate_before_save()
             if path_warnings and messagebox:
                 msg = "检测到以下文件保存位置可能不当：\n- " + "\n- ".join(path_warnings) + "\n\n是否忽略警告并强制写回？"
@@ -3509,6 +4481,7 @@ class FileStructureEditorWindow(tk.Toplevel if tk else object):
             self._log(f"保存失败: {str(exc)}")
             return
         self.dirty = False
+        self._legacy_run_order_audit = None
         self.status_var.set(f"保存成功，已写回 {self.blueprint_xlsx_path}")
         self._log(f"保存成功，已将更新写入 Excel，物理行原位更新，新行已追加至末尾。")
         # 显示加载遮罩

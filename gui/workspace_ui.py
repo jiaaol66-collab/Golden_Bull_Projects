@@ -15,6 +15,15 @@ except Exception:
     from motion import smooth_scroll_to
 from openpyxl import load_workbook
 from award_config import get_manifest_award
+from scripts.workspace_materials import (
+    ALL_MATERIALS_CATEGORY,
+    filter_material_folders,
+    format_file_size,
+    get_material_categories,
+    is_protected_material_file,
+    scan_materials,
+    validate_material_file_deletion,
+)
 
 try:
     import duckdb
@@ -1006,7 +1015,7 @@ class WorkspaceUIMixin:
         #             # text="步骤主代码与代码文件夹分栏展示",
         #             text_color=TEXT_MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 4))
 
-        # 左侧“步骤代码 / 代码文件夹”切换统一走 tabview_style。
+        # 左侧“步骤代码 / 代码文件夹 / 资料”切换统一走 tabview_style。
         left_tabview = ctk.CTkTabview(
             left_panel,
             command=lambda tid=tab_id: self.on_left_view_changed(tid),
@@ -1015,10 +1024,13 @@ class WorkspaceUIMixin:
         left_tabview.pack(fill="both", expand=True)
         step_tab = left_tabview.add("步骤代码")
         code_tab = left_tabview.add("代码文件夹")
+        materials_tab = left_tabview.add("资料")
         tab_data["left_tabview"] = left_tabview
         tab_data["left_step_tab"] = step_tab
         tab_data["left_code_tab"] = code_tab
+        tab_data["left_materials_tab"] = materials_tab
         tab_data["code_folder_rendered"] = False
+        tab_data["materials_rendered"] = False
 
         self.render_step_code_tab(tab_id, step_tab, prev_values)
 
@@ -1045,7 +1057,7 @@ class WorkspaceUIMixin:
         except Exception:
             selected = tab_data.get("left_tab_preferred", "步骤代码")
         selected = _clean_text(selected) or "步骤代码"
-        if selected not in {"步骤代码", "代码文件夹"}:
+        if selected not in {"步骤代码", "代码文件夹", "资料"}:
             selected = "步骤代码"
         tab_data["left_tab_preferred"] = selected
         
@@ -1064,9 +1076,255 @@ class WorkspaceUIMixin:
                     # 清除未处理错误标记
                     if has_unhandled_error:
                         tab_data["has_unhandled_error"] = False
+        elif selected == "资料":
+            materials_tab = tab_data.get("left_materials_tab")
+            if materials_tab and materials_tab.winfo_exists():
+                if tab_data.pop("materials_dirty", False) or not tab_data.get("materials_rendered", False):
+                    for widget in materials_tab.winfo_children():
+                        widget.destroy()
+                    self.render_materials_tab(tab_id, materials_tab)
+                    tab_data["materials_rendered"] = True
         
         if not tab_data.get("suspend_gui_state_save"):
             self.schedule_gui_state_save(tab_id)
+
+    def get_materials_root(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id, {})
+        manifest = tab_data.get("manifest", {}) or {}
+        workspace_root = manifest.get("workspace_root", "")
+        return os.path.join(workspace_root, "资料") if workspace_root else ""
+
+    def refresh_materials_tab(self, tab_id):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        materials_tab = tab_data.get("left_materials_tab")
+        if not materials_tab or not materials_tab.winfo_exists():
+            tab_data["materials_dirty"] = True
+            return
+
+        old_scroll = tab_data.get("materials_scroll")
+        reset_scroll = tab_data.pop("materials_reset_scroll", False)
+        scroll_fraction = 0.0 if reset_scroll else (self.get_scroll_fraction(old_scroll) if old_scroll else 0.0)
+        for widget in materials_tab.winfo_children():
+            widget.destroy()
+        self.render_materials_tab(tab_id, materials_tab)
+        tab_data["materials_rendered"] = True
+        tab_data["materials_dirty"] = False
+        new_scroll = tab_data.get("materials_scroll")
+        if new_scroll:
+            self.safe_after_idle(self.set_scroll_fraction, new_scroll, scroll_fraction)
+
+    def on_materials_category_changed(self, tab_id, category):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        tab_data["materials_category_preferred"] = _clean_text(category) or ALL_MATERIALS_CATEGORY
+        tab_data["materials_reset_scroll"] = True
+        self.refresh_materials_tab(tab_id)
+        if not tab_data.get("suspend_gui_state_save"):
+            self.schedule_gui_state_save(tab_id)
+
+    def delete_material_file(self, tab_id, path):
+        from tkinter import messagebox
+
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        materials_root = self.get_materials_root(tab_id)
+        protected_paths = (tab_data.get("bp_path", ""),)
+        allowed, reason = validate_material_file_deletion(materials_root, path, protected_paths)
+        if not allowed:
+            messagebox.showwarning("无法删除", reason, parent=self)
+            return
+
+        rel_path = os.path.relpath(path, materials_root)
+        confirmed = messagebox.askokcancel(
+            "删除资料文件",
+            f"确定要删除这个文件吗？\n\n{rel_path}\n\n删除后无法从 Terminal 内恢复。",
+            icon="warning",
+            parent=self,
+        )
+        if not confirmed:
+            return
+
+        # 确认后再次校验，避免弹窗停留期间文件被替换或移出资料目录。
+        allowed, reason = validate_material_file_deletion(materials_root, path, protected_paths)
+        if not allowed:
+            messagebox.showwarning("无法删除", reason, parent=self)
+            self.refresh_materials_tab(tab_id)
+            return
+        try:
+            os.remove(path)
+        except OSError as exc:
+            messagebox.showerror("删除失败", f"无法删除文件：\n{rel_path}\n\n{exc}", parent=self)
+            return
+
+        self.log_msg(tab_id, f"资料文件已删除: {rel_path}")
+        self.refresh_materials_tab(tab_id)
+
+    def render_materials_tab(self, tab_id, parent):
+        tab_data = self.active_tabs_data.get(tab_id)
+        if not tab_data:
+            return
+        materials_root = self.get_materials_root(tab_id)
+        protected_paths = (tab_data.get("bp_path", ""),)
+        folders = scan_materials(materials_root)
+        category_options = get_material_categories(folders)
+        selected_category = _clean_text(
+            tab_data.get("materials_category_preferred", ALL_MATERIALS_CATEGORY)
+        ) or ALL_MATERIALS_CATEGORY
+        if selected_category not in category_options:
+            selected_category = ALL_MATERIALS_CATEGORY
+        tab_data["materials_category_preferred"] = selected_category
+
+        header_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        header_frame.pack(fill="x", pady=0)
+        title_row = ctk.CTkFrame(header_frame, fg_color="transparent")
+        title_row.pack(fill="x")
+        ctk.CTkLabel(title_row, text="资料", text_color=TEXT_PRIMARY, font=ui_font(13, "bold")).pack(side="left")
+        ctk.CTkButton(
+            title_row,
+            text="刷新",
+            width=68,
+            height=26,
+            corner_radius=RADIUS_SM,
+            font=ui_font(11),
+            command=lambda tid=tab_id: self.refresh_materials_tab(tid),
+            **button_secondary_style(),
+        ).pack(side="right")
+        ctk.CTkLabel(
+            header_frame,
+            text="浏览代码、Notebook、说明及工作区设置；文件结构受保护。",
+            text_color=TEXT_MUTED,
+            wraplength=520,
+            justify="left",
+            font=ui_font(10),
+        ).pack(anchor="w", pady=(0, 3))
+
+        action_row = ctk.CTkFrame(header_frame, fg_color="transparent")
+        action_row.pack(fill="x", pady=(0, 4))
+        ctk.CTkButton(
+            action_row,
+            text="打开资料目录",
+            width=WIDTH_OPEN_FOLDER_BUTTON,
+            height=28,
+            corner_radius=RADIUS_SM,
+            font=ui_font(11),
+            state="normal" if os.path.isdir(materials_root) else "disabled",
+            command=lambda p=materials_root: self.open_path(p),
+            **button_primary_style(),
+        ).pack(side="left")
+        category_menu = ctk.CTkOptionMenu(
+            action_row,
+            values=category_options,
+            height=28,
+            corner_radius=RADIUS_SM,
+            font=ui_font(11),
+            command=lambda value, tid=tab_id: self.on_materials_category_changed(tid, value),
+            **option_menu_style(),
+        )
+        category_menu.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        category_menu.set(selected_category)
+        tab_data["materials_category_menu"] = category_menu
+
+        materials_scroll = ctk.CTkScrollableFrame(parent, **scrollable_style())
+        materials_scroll.pack(fill="both", expand=True)
+        tab_data["materials_scroll"] = materials_scroll
+
+        if not os.path.isdir(materials_root):
+            ctk.CTkLabel(
+                materials_scroll,
+                text="当前工作区没有资料目录。",
+                text_color=TEXT_MUTED,
+                wraplength=WRAP_LEFT_HINT,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=10)
+            return
+
+        visible_folders = filter_material_folders(folders, selected_category)
+        file_count = sum(len(folder["files"]) for folder in visible_folders)
+        if not file_count:
+            ctk.CTkLabel(
+                materials_scroll,
+                text=(
+                    "资料目录中暂时没有文件。"
+                    if selected_category == ALL_MATERIALS_CATEGORY
+                    else f"“{selected_category}”分类中暂时没有文件。"
+                ),
+                text_color=TEXT_MUTED,
+                wraplength=WRAP_LEFT_HINT,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=10)
+
+        for folder in visible_folders:
+            if not folder["files"]:
+                continue
+            card = ctk.CTkFrame(materials_scroll, **panel_card_style())
+            card.pack(fill="x", padx=6, pady=6)
+            folder_title = folder["rel_path"] or "资料根目录"
+            folder_header = ctk.CTkFrame(card, fg_color="transparent")
+            folder_header.pack(fill="x", padx=10, pady=(9, 4))
+            ctk.CTkLabel(
+                folder_header,
+                text=folder_title,
+                text_color=TEXT_PRIMARY,
+                font=ui_font(13, "bold"),
+                wraplength=WRAP_FOLDER_CARD,
+                justify="left",
+            ).pack(side="left", fill="x", expand=True, anchor="w")
+            ctk.CTkButton(
+                folder_header,
+                text="打开文件夹",
+                width=WIDTH_OPEN_FOLDER_BUTTON,
+                height=HEIGHT_BUTTON_SM,
+                corner_radius=RADIUS_SM,
+                command=lambda p=folder["abs_path"]: self.open_path(p),
+                **button_secondary_style(),
+            ).pack(side="right", padx=(6, 0))
+
+            for item in folder["files"]:
+                protected = is_protected_material_file(item["abs_path"], protected_paths)
+                row = ctk.CTkFrame(card, **surface_card_style())
+                row.pack(fill="x", padx=10, pady=(0, 6))
+                ctk.CTkLabel(
+                    row,
+                    text=item["name"],
+                    text_color=TEXT_PRIMARY,
+                    font=ui_font(12, "bold"),
+                    wraplength=WRAP_PANEL_MD,
+                    justify="left",
+                ).pack(anchor="w", padx=8, pady=(7, 0))
+                detail = format_file_size(item["size_bytes"])
+                if protected:
+                    detail += " · 文件结构保护"
+                ctk.CTkLabel(
+                    row,
+                    text=detail,
+                    text_color=TEXT_MUTED,
+                    font=ui_font(11),
+                ).pack(anchor="w", padx=8, pady=(1, 5))
+                file_actions = ctk.CTkFrame(row, fg_color="transparent")
+                file_actions.pack(fill="x", padx=8, pady=(0, 8))
+                ctk.CTkButton(
+                    file_actions,
+                    text="打开",
+                    width=WIDTH_ACTION_BUTTON_SM,
+                    height=HEIGHT_BUTTON_SM,
+                    corner_radius=RADIUS_SM,
+                    command=lambda p=item["abs_path"]: self.open_file(p),
+                    **button_primary_style(),
+                ).pack(side="left", padx=(0, 6))
+                ctk.CTkButton(
+                    file_actions,
+                    text="已保护" if protected else "删除",
+                    width=WIDTH_ACTION_BUTTON_SM,
+                    height=HEIGHT_BUTTON_SM,
+                    corner_radius=RADIUS_SM,
+                    state="disabled" if protected else "normal",
+                    command=lambda p=item["abs_path"], tid=tab_id: self.delete_material_file(tid, p),
+                    **button_danger_style(),
+                ).pack(side="left")
 
     def get_step_run_history_stats(self, tab_id):
         tab_data = self.active_tabs_data.get(tab_id)
@@ -1418,7 +1676,7 @@ class WorkspaceUIMixin:
             hover_color = SUCCESS_HOVER
             text_color = TEXT_INVERSE
             priority = 0
-        elif script_name == "test.py":
+        elif script_name in {"inherit.py", "test.py"}:
             label = "继承工作区"
             fg_color = ACCENT
             hover_color = ACCENT_HOVER
@@ -3086,7 +3344,11 @@ class WorkspaceUIMixin:
     def open_file(self, path):
         resolved_path = os.path.normpath(os.path.abspath(path))
         ext = os.path.splitext(resolved_path)[1].lower()
-        if ext in {".py", ".md", ".txt", ".json", ".log", ".csv"}:
+        if ext in {
+            ".py", ".ipynb", ".md", ".txt", ".json", ".log", ".csv", ".tsv",
+            ".yaml", ".yml", ".toml", ".ini", ".cfg", ".sql", ".r", ".js",
+            ".ts", ".bat", ".cmd", ".ps1", ".sh",
+        }:
             if self.open_text_file_in_editor(resolved_path):
                 return
         self.open_path(resolved_path)

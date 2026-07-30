@@ -13,8 +13,8 @@ AWARD_CONFIG = {
     "私募金牛奖": {
         "folder": "GB_PriFund",
         "manifest_award": "私募",
-        "config_module": "userlib.prifund_config",
-        "config_file": "userlib/prifund_config.py",
+        "config_module": "userlib.configs.prifund_config",
+        "config_file": "userlib/configs/prifund_config.py",
         "config_label": "私募配置"
     },
     "公募金牛奖": {
@@ -41,15 +41,15 @@ AWARD_CONFIG = {
     "分析师金牛奖": {
         "folder": "GB_Analyst",
         "manifest_award": "分析师",
-        "config_module": "",
-        "config_file": "",
-        "config_label": ""
+        "config_module": "userlib.configs.analyst_config",
+        "config_file": "userlib/configs/analyst_config.py",
+        "config_label": "分析师配置"
     },
     "券商资管金牛奖": {
         "folder": "GB_BrokerAM",
         "manifest_award": "券商资管",
-        "config_module": "userlib.broker_am_config",
-        "config_file": "userlib/broker_am_config.py",
+        "config_module": "userlib.configs.broker_am_config",
+        "config_file": "userlib/configs/broker_am_config.py",
         "config_label": "券商资管配置"
     },
     "测试流程": {
@@ -58,6 +58,13 @@ AWARD_CONFIG = {
         "config_module": "",
         "config_file": "",
         "config_label": ""
+    },
+    "证券公司金牛奖(营业部)": {
+        "folder": "GB_BrokerBranch",
+        "manifest_award": "营业部",
+        "config_module": "userlib.configs.broker_branch_config",
+        "config_file": "userlib/configs/broker_branch_config.py",
+        "config_label": "营业部配置"
     }
 }
 
@@ -119,7 +126,19 @@ def get_award_config_file(award_name, project_root=None):
     if not config_file:
         return ""
     base_dir = project_root or os.path.dirname(os.path.abspath(__file__))
-    return os.path.normpath(os.path.join(base_dir, config_file))
+    configured_path = os.path.normpath(os.path.join(base_dir, config_file))
+    if os.path.isfile(configured_path):
+        return configured_path
+
+    normalized_file = _normalize_rel_path(config_file)
+    path_parts = normalized_file.split("/")
+    if len(path_parts) == 2 and path_parts[0] == "userlib":
+        fallback_path = os.path.normpath(
+            os.path.join(base_dir, "userlib", "configs", path_parts[-1])
+        )
+        if os.path.isfile(fallback_path):
+            return fallback_path
+    return configured_path
 
 def has_award_config(award_name, project_root=None):
     config_file = get_award_config_file(award_name, project_root=project_root)

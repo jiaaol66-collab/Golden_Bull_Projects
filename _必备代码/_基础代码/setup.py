@@ -2,7 +2,7 @@ import sys, os, time, json
 from pathlib import Path
 
 os.chdir(os.path.dirname(__file__))
-""" 初始化程序(名字先这样) """
+"""工作区 step_0 前期准备入口。"""
 
 def find_and_add_package_path(
         package_name: str,
@@ -184,18 +184,18 @@ if not os.path.exists(f'{rel}年份信息.txt'):
     # 检查原始数据的存在性
     if not os.listdir(f'{org}/{yr}/') or f'{yr}' not in os.listdir(org):
         do = custom_dialog(f'No file exists in {yr}!',
-                           '没有指定年份的原始数据，建议重启工作区！\n打开工作区后运行test.py',
+                           '没有指定年份的原始数据，建议重启工作区！\n打开工作区后运行inherit.py',
                            'info', '好的')
     else:
         do = False
 
     if do:
         create_empty_file('../to_be_deleted.txt')
-        copy_file(f'{mtr}/代码/更新代码/test.py', '../test.py')
+        copy_file(f'{mtr}/代码/更新代码/inherit.py', '../inherit.py')
         copy_file(f'{mtr}/代码/run.bat', '../run.bat')
         copy_file(f'{mtr}/代码/更新代码/update_all_code.py', '../update_all_code.py')
         if custom_dialog('Confirm to proceed', '直接重启本工作区吗?', 'confirm', '是的', '否的'):
-            run('test.py', '../.')
+            run('inherit.py', '../.')
         sys.exit(0)
     if not os.path.exists(f'{rel}是否采用机构数据.txt'):
         # 是否采用测试数据修改

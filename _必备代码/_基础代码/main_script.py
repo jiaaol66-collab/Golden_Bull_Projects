@@ -139,7 +139,7 @@ else:
 tof = []
 tag_initialize = 0
 if tag == '0':
-    tof.append(run('运行此文件.py', 'step_0_前期准备'))
+    tof.append(run('setup.py', 'step_0_前期准备'))
     tag_initialize = 1
     start_time1 = time.time()
 impt = find_rel(__file__, '重要文件')

@@ -119,6 +119,68 @@ def find_info(target_name, start_path=None, max_depth=5):
 
     return __file__
 
+
+def get_terminal_dataset_path(year, script_path=None):
+    """读取 terminal 为指定评奖年份保存的原始数据集路径。
+
+    terminal 会把选择结果写入奖项根目录下的 ``奖项资料配置.json``。
+    本函数从当前步骤脚本（或 terminal 注入的运行脚本路径）开始向上查找该配置，
+    成功时返回规范化后的绝对路径，未配置、配置无效或目录不存在时返回空字符串。
+
+    :param year: 评奖年份，例如 ``2025``。
+    :param script_path: 当前 ``.py``/``.ipynb`` 路径；terminal 内运行时可省略。
+    :return: 原始数据集绝对路径，未找到时返回 ``''``。
+    """
+    year_text = str(year or "").strip()
+    if not year_text:
+        return ""
+
+    start_candidates = [
+        script_path,
+        os.environ.get("GB_NOTEBOOK_PATH"),
+        os.environ.get("GB_SCRIPT_PATH"),
+        os.getcwd(),
+    ]
+    visited_dirs = set()
+
+    for raw_start in start_candidates:
+        raw_start = str(raw_start or "").strip()
+        if not raw_start:
+            continue
+        current = Path(raw_start).expanduser().resolve()
+        if current.is_file() or current.suffix.lower() in {".py", ".ipynb"}:
+            current = current.parent
+
+        for base_dir in (current, *current.parents):
+            base_key = os.path.normcase(str(base_dir))
+            if base_key in visited_dirs:
+                continue
+            visited_dirs.add(base_key)
+
+            config_path = base_dir / "奖项资料配置.json"
+            if not config_path.is_file():
+                continue
+            try:
+                with config_path.open("r", encoding="utf-8") as file:
+                    payload = json.load(file)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            years = payload.get("years", {})
+            year_payload = years.get(year_text, {}) if isinstance(years, dict) else {}
+            raw_dataset_path = year_payload.get("dataset_path", "") if isinstance(year_payload, dict) else ""
+            raw_dataset_path = str(raw_dataset_path or "").strip()
+            if not raw_dataset_path:
+                return ""
+
+            dataset_path = Path(raw_dataset_path).expanduser()
+            if not dataset_path.is_absolute():
+                dataset_path = config_path.parent / dataset_path
+            dataset_path = dataset_path.resolve()
+            return str(dataset_path) if dataset_path.is_dir() else ""
+
+    return ""
+
 def get_path(n, path):
     """ 找到path第n层级的相对路径
 

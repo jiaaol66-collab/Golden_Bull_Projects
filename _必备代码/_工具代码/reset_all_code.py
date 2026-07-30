@@ -146,7 +146,7 @@ def rev_copy_file(dst, src, replace=0):       # 从源路径（dst)复制一个�
         return True
 
 
-if os.path.exists('test.py'):
+if os.path.exists('inherit.py'):
     if not os.path.exists('参评信息/保存修改信息.txt'):
         ready = custom_dialog('Confirm',
                               '即将把保存的资料/代码更新到工作的步骤文件夹内，确认吗？(此操作仅能通过查询备份文件挽回!)',

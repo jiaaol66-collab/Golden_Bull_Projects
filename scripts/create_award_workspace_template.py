@@ -27,7 +27,7 @@ DEFAULT_CODE_DIR = REPO_ROOT / "_必备代码" / "_默认代码"
 RESULT_FILE_PATH = REPO_ROOT / ".award_template_creation_result.json"
 
 ROOT_BASIC_FILES = ["data_ingestion.py", "initialize.py"]
-UPDATE_BASIC_FILES = ["run_this.py", "main_script.py"]
+UPDATE_BASIC_FILES = ["setup.py", "main_script.py"]
 ROOT_CODE_FILES = {"code_backup.py", "flush_buffer.py", "run.bat"}
 README_FILES = {"readme_backup.py"}
 
@@ -173,18 +173,10 @@ def _create_step0_runner(workspace_root):
     step0_dir = workspace_root / "step_0_前期准备"
     make_dir(str(step0_dir), 1)
 
-    source = workspace_root / "资料" / "代码" / "更新代码" / "run_this.py"
-    target = step0_dir / "运行此文件.py"
+    source = workspace_root / "资料" / "代码" / "更新代码" / "setup.py"
+    target = step0_dir / "setup.py"
     _copy_required_file(source, target)
     return str(target)
-
-
-# def _create_award_initialize_runner(award_root):
-#     award_root = Path(award_root)
-#     source = award_root / "initialize.py"
-#     target = award_root / "运行此文件.py"
-#     _copy_required_file(source, target)
-#     return str(target)
 
 
 def _write_creation_result(context):
@@ -247,8 +239,8 @@ def main():
             "下一步请在 terminal 中：\n"
             "1. 点击“文件结构”按钮，自定义 文件结构.xlsx。\n"
             "2. 保存后，terminal 会按最新文件结构重新读取工作区。\n"
-            "3. 如需先做奖项级初始化，可运行奖项根目录里的 运行此文件.py。\n"
-            "4. 最后手动运行 step_0_前期准备 里的 运行此文件.py。\n\n"
+            "3. 如需先做奖项级初始化，可运行奖项根目录里的 initialize.py。\n"
+            "4. 最后手动运行 step_0_前期准备 里的 setup.py。\n\n"
             # f"奖项根目录初始化入口：\n{initialize_runner_path}\n\n"
             f"工作区：\n{context['workspace_root']}\n\n"
             f"step_0 运行入口：\n{step0_runner_path}",

@@ -160,10 +160,10 @@ for idx, row in code.iterrows():
 
     tof.append(copy_file(src_path, f'资料/{code_istr}/{sub_code}/{sav_name}', 1, 0, 1))
 
-if os.path.exists('test.py'):
-    copy_file('test.py','资料/代码/更新代码/test.py',1)
+if os.path.exists('inherit.py'):
+    copy_file('inherit.py','资料/代码/更新代码/inherit.py',1)
 else:
-    copy_file('资料/代码/更新代码/test.py','test.py')
+    copy_file('资料/代码/更新代码/inherit.py','inherit.py')
 
 if not all(tof):
     tag_False = 1

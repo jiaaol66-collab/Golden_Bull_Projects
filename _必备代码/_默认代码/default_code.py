@@ -126,7 +126,7 @@ impt = find_rel(__file__, '重要文件')
 mtr = find_rel(__file__, '资料')
 processed = find_rel(__file__, '已处理')
 org = find_rel(__file__, '原始数据集')
-
+yr = get_year(rel)
 ## 导入...
 # eg.
 # df = pd.read_excel(f'{impt}filename.xlsx', parse_dates=['成立日期','清盘日期'])

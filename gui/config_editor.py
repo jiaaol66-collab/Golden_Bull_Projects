@@ -74,14 +74,22 @@ BROKER_AM_FIELD_SPECS = [
     {"key": "stock_name", "label": "股票类名称", "kind": "text", "help": "当年正式奖项命名。", "group": "日期与名称", "placeholder": "股票多头型"},
     {"key": "fof_name", "label": "FOF 名称", "kind": "text", "help": "当年正式奖项命名。", "group": "日期与名称", "placeholder": "FOF"},
     {"key": "sharpe_col", "label": "Sharpe 列名", "kind": "text", "help": "结果表中的 Sharpe 列名称。", "group": "日期与名称", "placeholder": "风险调整后收益"},
-    {"key": "dataset_ingestion.required_files", "label": "必需文件", "kind": "list_text", "help": "用于定位数据集目录的文件名列表。", "group": "数据集读取", "placeholder": "报名表.xlsx"},
-    {"key": "dataset_ingestion.required_dirs", "label": "必需目录", "kind": "list_text", "help": "用于定位数据集目录的子目录名列表。", "group": "数据集读取", "placeholder": "上传数据,补充资料"},
-    {"key": "dataset_ingestion.bundle_parts", "label": "根目录附加层级", "kind": "list_text", "help": "若报名表位于匹配目录下的更深层，可在此追加路径层级。留空表示不追加。", "group": "数据集读取", "placeholder": "goldenbull_zqzg"},
+    {"key": "dataset_ingestion.bundle_parts", "label": "根目录附加层级", "kind": "list_text", "allow_empty": True, "help": "若报名表位于匹配目录下的更深层，可在此追加路径层级。留空表示不追加。", "group": "数据集读取", "placeholder": "goldenbull_zqzg"},
     {"key": "dataset_ingestion.source_dirs", "label": "上传目录列表", "kind": "list_text", "help": "按相对路径填写需要读取的上传/补充资料目录。", "group": "数据集读取", "placeholder": "上传数据,补充资料"},
     {"key": "dataset_ingestion.info_file", "label": "报名表文件名", "kind": "text", "help": "例如 报名表.xlsx 或 用户信息表.xlsx。", "group": "数据集读取", "placeholder": "报名表.xlsx"},
     {"key": "dataset_ingestion.id_column", "label": "机构编号列", "kind": "text", "help": "报名表中与上传文件对应的编号列名。", "group": "数据集读取", "placeholder": "id"},
     {"key": "dataset_ingestion.company_name_column", "label": "公司名称列", "kind": "text", "help": "报名表中公司名称列名。", "group": "数据集读取", "placeholder": "f_company_name"},
-    {"key": "dataset_ingestion.skiprows", "label": "跳过表头行", "kind": "list_int", "help": "直接输入需要跳过的行号列表，例如 1 或 0,1。", "group": "数据集读取", "placeholder": "1"},
+    {"key": "dataset_ingestion.skiprows", "label": "跳过表头行", "kind": "list_int", "allow_empty": True, "help": "直接输入需要跳过的行号列表，例如 1 或 0,1；留空表示不跳过。", "group": "数据集读取", "placeholder": "1"},
+]
+
+ANALYST_FIELD_SPECS = [
+    {"key": "dataset_ingestion.bundle_parts", "label": "根目录附加层级", "kind": "list_text", "allow_empty": True, "help": "Terminal 选择的数据集目录下若仍需追加层级，在此填写；留空表示直接使用所选目录。", "group": "数据集读取", "placeholder": "留空"},
+    {"key": "dataset_ingestion.source_dirs", "label": "报名资料目录", "kind": "list_text", "help": "按相对路径填写报名资料及补充资料目录。", "group": "数据集读取", "placeholder": "goldenbull_fxs,goldenbull_fxs_ex"},
+    {"key": "dataset_ingestion.info_file", "label": "用户注册表文件", "kind": "text", "help": "Terminal 所选数据集目录内的用户注册表文件名。", "group": "数据集读取", "placeholder": "分析师_用户注册表.xlsx"},
+    {"key": "dataset_ingestion.id_column", "label": "机构关联键列", "kind": "text", "help": "注册表中与报名资料文件夹对应的机构标识列。", "group": "数据集读取", "placeholder": "f_user_id"},
+    {"key": "dataset_ingestion.company_short_name_column", "label": "机构简称列", "kind": "text", "help": "注册表中的机构简称列。", "group": "数据集读取", "placeholder": "f_company"},
+    {"key": "dataset_ingestion.company_name_column", "label": "公司名称列", "kind": "text", "help": "注册表中的公司名称列。", "group": "数据集读取", "placeholder": "f_company_name"},
+    {"key": "dataset_ingestion.skiprows", "label": "跳过表头行", "kind": "list_int", "allow_empty": True, "help": "直接输入需要跳过的行号，例如 1；留空表示不跳过。", "group": "数据集读取", "placeholder": "留空"},
 ]
 
 CONFIG_SCHEMAS = {
@@ -97,6 +105,12 @@ CONFIG_SCHEMAS = {
         "intro": "左边是默认值，只读；右边是当前年份配置，默认已按 DEFAULT 预填，可以直接改。",
         "field_specs": BROKER_AM_FIELD_SPECS,
     },
+    "分析师金牛奖": {
+        "name": "analyst",
+        "label": "分析师配置",
+        "intro": "左边是默认数据集读取口径；右边是当前年份的目录、文件、关联列及读取参数。",
+        "field_specs": ANALYST_FIELD_SPECS,
+    },
 }
 
 FORM_LABEL_COLUMN_WIDTH = 340
@@ -106,6 +120,35 @@ FORM_SCALAR_CELL_MIN_HEIGHT = 72
 
 def _deepcopy_data(value):
     return copy.deepcopy(value)
+
+
+def _coerce_like_template(value, template):
+    if isinstance(template, dict) and isinstance(value, dict):
+        result = {}
+        for raw_key, raw_value in value.items():
+            target_key = raw_key
+            if raw_key not in template and isinstance(raw_key, str):
+                try:
+                    numeric_key = int(raw_key)
+                except ValueError:
+                    numeric_key = None
+                if numeric_key in template:
+                    target_key = numeric_key
+            target_template = template.get(target_key)
+            result[target_key] = _coerce_like_template(raw_value, target_template)
+        return result
+    if isinstance(template, tuple) and isinstance(value, (list, tuple)):
+        return tuple(
+            _coerce_like_template(
+                item,
+                template[index] if index < len(template) else None,
+            )
+            for index, item in enumerate(value)
+        )
+    if isinstance(template, list) and isinstance(value, (list, tuple)):
+        item_template = template[0] if template else None
+        return [_coerce_like_template(item, item_template) for item in value]
+    return _deepcopy_data(value)
 
 
 def _read_utf8_text(path):
@@ -196,6 +239,20 @@ def save_config_payload(config_file_path, default_obj, profiles_obj):
     updated_text = "".join(lines)
     _write_utf8_text(config_file_path, updated_text)
     return config_file_path
+
+
+def build_year_config_export_payload(config_file_path, year_key):
+    normalized_year = _normalize_year_key(year_key)
+    default_obj, profiles_obj = load_config_payload(config_file_path)
+    effective_obj = _build_effective_year_data(default_obj, profiles_obj, normalized_year)
+    return {"PROFILES": {str(normalized_year): effective_obj}}
+
+
+def export_year_config_json(config_file_path, year_key, output_path):
+    payload = build_year_config_export_payload(config_file_path, year_key)
+    resolved_output = os.path.normpath(os.path.abspath(output_path))
+    _write_utf8_text(resolved_output, _json_text(payload) + "\n")
+    return resolved_output
 
 
 def _normalize_award_name(award_name):
@@ -341,11 +398,12 @@ def _check_dataset_ingestion(errors, name, value):
     if not isinstance(value, dict):
         errors.append(f"{name} 必须是字典。")
         return
-    text_list_keys = ("required_files", "required_dirs", "bundle_parts", "source_dirs")
-    for key in text_list_keys:
-        items = value.get(key)
-        if not isinstance(items, list) or not all(isinstance(item, str) and item.strip() for item in items):
-            errors.append(f"{name}.{key} 必须是非空字符串列表。")
+    bundle_parts = value.get("bundle_parts")
+    if not isinstance(bundle_parts, list) or not all(isinstance(item, str) and item.strip() for item in bundle_parts):
+        errors.append(f"{name}.bundle_parts 必须是字符串列表，可为空列表。")
+    source_dirs = value.get("source_dirs")
+    if not isinstance(source_dirs, list) or not source_dirs or not all(isinstance(item, str) and item.strip() for item in source_dirs):
+        errors.append(f"{name}.source_dirs 必须是非空字符串列表。")
     for key in ("info_file", "id_column", "company_name_column"):
         item = value.get(key)
         if not isinstance(item, str) or not item.strip():
@@ -455,10 +513,46 @@ def _validate_broker_am_payload(default_obj, profiles_obj):
     return errors
 
 
+def _validate_analyst_payload(default_obj, profiles_obj):
+    errors = []
+    profiles_obj = _normalize_profiles(profiles_obj)
+    if not isinstance(default_obj, dict):
+        return ["DEFAULT 必须是字典。"]
+
+    def _check_analyst_ingestion(name, value):
+        _check_dataset_ingestion(errors, name, value)
+        if isinstance(value, dict):
+            _check_text(
+                errors,
+                f"{name}.company_short_name_column",
+                value.get("company_short_name_column"),
+            )
+
+    if "dataset_ingestion" not in default_obj:
+        errors.append("DEFAULT.dataset_ingestion 不能为空。")
+    else:
+        _check_analyst_ingestion(
+            "DEFAULT.dataset_ingestion",
+            default_obj.get("dataset_ingestion"),
+        )
+
+    for year_key, profile in profiles_obj.items():
+        if not isinstance(profile, dict):
+            errors.append(f"PROFILES[{year_key}] 必须是字典。")
+            continue
+        _check_analyst_ingestion(
+            f"PROFILES[{year_key}].dataset_ingestion",
+            profile.get("dataset_ingestion"),
+        )
+    return errors
+
+
 def validate_config_payload(default_obj, profiles_obj, award_name=""):
     schema = get_config_schema(award_name)
     if schema["name"] == "broker_am":
         return _validate_broker_am_payload(default_obj, profiles_obj)
+    if schema["name"] == "analyst":
+        return _validate_analyst_payload(default_obj, profiles_obj)
     return _validate_prifund_payload(default_obj, profiles_obj)
 
 
@@ -479,16 +573,20 @@ def _split_csv_values(text):
     return [part.strip() for part in re.split(r"[，,;；\s]+", str(text or "").strip()) if part.strip()]
 
 
-def _parse_int_list(text):
+def _parse_int_list(text, allow_empty=False):
     parts = _split_csv_values(text)
     if not parts:
+        if allow_empty:
+            return []
         raise ValueError("列表不能为空。")
     return [int(part) for part in parts]
 
 
-def _parse_text_list(text):
+def _parse_text_list(text, allow_empty=False):
     parts = _split_csv_values(text)
     if not parts:
+        if allow_empty:
+            return []
         raise ValueError("列表不能为空。")
     return parts
 
@@ -540,6 +638,14 @@ def _apply_entry_placeholder(widget, placeholder_text):
         widget.configure(placeholder_text=str(placeholder_text))
     except Exception:
         pass
+
+
+def _format_field_parse_error(spec, exc):
+    field_label = str((spec or {}).get("label", "")).strip()
+    error_text = str(exc).strip() or exc.__class__.__name__
+    if not field_label or field_label in error_text:
+        return error_text
+    return f"{field_label}：{error_text}"
 
 
 def _spec_group_title(spec):
@@ -892,9 +998,15 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         if kind == "float":
             return float(info["widget"].get().strip())
         if kind == "list_int":
-            return _parse_int_list(info["widget"].get().strip())
+            return _parse_int_list(
+                info["widget"].get().strip(),
+                allow_empty=bool(spec.get("allow_empty")),
+            )
         if kind == "list_text":
-            return _parse_text_list(info["widget"].get().strip())
+            return _parse_text_list(
+                info["widget"].get().strip(),
+                allow_empty=bool(spec.get("allow_empty")),
+            )
         if kind == "pair_int":
             return _parse_pair_int(info["widget"].get().strip())
         if kind == "text":
@@ -940,7 +1052,11 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
         updated = _deepcopy_data(self.year_effective_data)
         try:
             for spec in self.field_specs:
-                _set_nested_value(updated, spec["key"], self._get_editor_value(spec))
+                try:
+                    field_value = self._get_editor_value(spec)
+                except Exception as exc:
+                    raise ValueError(_format_field_parse_error(spec, exc)) from exc
+                _set_nested_value(updated, spec["key"], field_value)
         except Exception as exc:
             messagebox.showerror("表单解析失败", str(exc), parent=self)
             return False
@@ -993,7 +1109,9 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
                     if not isinstance(payload["DEFAULT"], dict):
                         raise ValueError("DEFAULT 必须是字典。")
                     merged_default = _deepcopy_data(self.default_data)
-                    merged_default.update(_deepcopy_data(payload["DEFAULT"]))
+                    merged_default.update(
+                        _coerce_like_template(payload["DEFAULT"], self.default_data)
+                    )
                     self.default_data = merged_default
                 if "PROFILES" in payload:
                     merged_profiles = _deepcopy_data(self.profiles_data)
@@ -1001,13 +1119,17 @@ class ConfigEditorWindow(ctk.CTkToplevel if ctk is not None else object):
                     for year_key, override_payload in imported_profiles.items():
                         current_payload = merged_profiles.get(year_key, {})
                         current_payload = _deepcopy_data(current_payload) if isinstance(current_payload, dict) else {}
-                        current_payload.update(_deepcopy_data(override_payload))
+                        current_payload.update(
+                            _coerce_like_template(override_payload, self.default_data)
+                        )
                         merged_profiles[year_key] = current_payload
                     self.profiles_data = merged_profiles
                 self.year_effective_data = _build_effective_year_data(self.default_data, self.profiles_data, self.year_key)
             elif isinstance(payload, dict):
                 merged_effective = _deepcopy_data(self.year_effective_data)
-                merged_effective.update(_deepcopy_data(payload))
+                merged_effective.update(
+                    _coerce_like_template(payload, self.year_effective_data)
+                )
                 self.year_effective_data = merged_effective
             else:
                 raise ValueError("导入内容必须是对象。")

@@ -141,10 +141,10 @@ make_dir(path_t, 1)
 copy_file('step_0_前期准备', path_t + r'/step_0_前期准备')
 
 """—————————————————————————— 自定义keep_files ——————————————————————————————"""
-delete_except(path_t + '/step_0_前期准备', ['运行此文件.py'])
+delete_except(path_t + '/step_0_前期准备', ['setup.py'])
 copy_file('资料', path_t + r'/资料')
 
-run('运行此文件.py', path_t+'/step_0_前期准备/')
+run('setup.py', path_t+'/step_0_前期准备/')
 
 if os.path.exists(path_t + '/参评信息/年份信息.txt'):
     with open(path_t + '/参评信息/年份信息.txt', 'r') as f:
@@ -169,7 +169,7 @@ else:
     os.rename(path_t_orig, path_t)
     print(f'{path_t_orig}已更名为{path_t}')
 
-runner_path = os.path.join(path_t, 'step_0_前期准备', '运行此文件.py')
+runner_path = os.path.join(path_t, 'step_0_前期准备', 'setup.py')
 if os.path.exists(runner_path):
     open_file(runner_path)
 else:

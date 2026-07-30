@@ -163,7 +163,7 @@ copy_file(f'代码备份/{code}', f'{path_t}/资料/代码')
 copy_file(f'代码备份/{inst}', f'{path_t}/资料/说明')
 
 # 更新工具/默认代码到新工作区—————————————————————————————————————————————————————————————————
-tool_py = ['update_all_code.py', 'test.py', 'flush_all_data.py', 'reset_all_code.py']
+tool_py = ['update_all_code.py', 'inherit.py', 'flush_all_data.py', 'reset_all_code.py']
 backup_py = ['code_backup.py', 'readme_backup.py']
 
 for py in os.listdir(rel+'_工具代码'):
@@ -188,8 +188,11 @@ for i, row in info0.iterrows():
               f'{path_t}/step_{row["步骤"]}_{row["工作区文件夹"]}/{row["子文件夹1"]}/{row["子文件夹2"]}/{row["子文件夹3"]}/{row["子文件夹4"]}/{row["相应代码和说明文件"]}')
 
 create_empty_file(f'{path_t}/to_be_deleted.txt')
-copy_file(f'代码备份/{code}/更新代码/test.py', f'{path_t}/test.py')
+inherit_source = f'代码备份/{code}/更新代码/inherit.py'
+if not os.path.exists(inherit_source):
+    inherit_source = f'代码备份/{code}/更新代码/test.py'
+copy_file(inherit_source, f'{path_t}/inherit.py')
 
-run('test.py', path_t+'/')
+run('inherit.py', path_t+'/')
 
 delete_file('temp', 1)
