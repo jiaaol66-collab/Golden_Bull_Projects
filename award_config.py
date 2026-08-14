@@ -31,9 +31,9 @@ AWARD_CONFIG = {
         "config_file": "",
         "config_label": ""
     },
-    "银行理财金牛奖(其他奖)": {
-        "folder": "GB_BankWM/银理金牛奖(其他)步骤",
-        "manifest_award": "银理其他",
+    "银行理财公司奖": {
+        "folder": "GB_BankWM/银行理财公司奖步骤",
+        "manifest_award": "银理公司",
         "config_module": "",
         "config_file": "",
         "config_label": ""
