@@ -3,7 +3,7 @@ import sys, os, subprocess, shutil, time, re, platform, ast, threading, json, uu
 import pandas as pd, numpy as np
 from pathlib import Path
 from collections import OrderedDict
-from datetime import datetime
+from datetime import date, datetime
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
@@ -242,29 +242,30 @@ def find_rel(src, target):
 
 def numer_dates(date_series):
     """
-    仅处理5位数字的 Excel 序列日期，其他值设为空。
+    仅处理5位数字或其零小数形式的 Excel 序列日期，其他值设为空。
 
     说明:
-    - 5位数字按 Excel 序列日期解析。
+    - 5位数字（如 44926）及零小数形式（如 44926.0）按 Excel 序列日期解析。
     - 不再自动解析6位数字，避免将类似 401798 误拆成 40179.8 天，
       进而生成 2009-12-29 19:12:00 这类带时分秒的伪日期。
     参数:
         date_series: pandas.Series, 包含日期字符串或数值的序列
     返回:
-        pandas.Series, 转换后的datetime64[ns]类型（非5位数字为NaT）
+        pandas.Series, 转换后的datetime64[ns]类型（非Excel序列日期为NaT）
     """
     # 创建结果容器（初始化为NaT）
-    result = pd.Series(pd.NaT, index=date_series.index)
+    result = pd.Series(pd.NaT, index=date_series.index, dtype='datetime64[us]')
     # 基准日期 (1899-12-30)
     base_date = pd.Timestamp('1899-12-30')
 
-    # 步骤1：识别严格5位数字格式
-    is_5digit = date_series.astype(str).str.fullmatch(r'\d{5}')
+    # 步骤1：识别5位整数或其零小数形式；不接受真正带小数的天数。
+    date_text = date_series.astype('string').str.strip()
+    is_5digit = date_text.str.fullmatch(r'\d{5}(?:\.0+)?', na=False)
 
     # 步骤2：仅处理5位数字的情况
     if is_5digit.any():
         # 提取数字并计算日期
-        digits = pd.to_numeric(date_series[is_5digit], errors='coerce')
+        digits = pd.to_numeric(date_text[is_5digit], errors='coerce').round().astype('int64')
         result[is_5digit] = base_date + pd.to_timedelta(digits, unit='D')
 
     # 非5位数字保持为NaT（不进行任何处理）
@@ -275,30 +276,178 @@ def numer_dates(date_series):
 #     se_pro = parse_dates(se,['%Y~%m~%d'])
 #     print(se, se_pro)
 
-def parse_dates(date_series, formats=None):
+def parse_dates(date_series, formats=None, errors='coerce'):
     """
     清洗日期函数，无法处理的日期元素将返回空值\n
     示例: df[‘date_cleaned'] = parse_date(df['date'],['%Y~%m~%d'])
 
     :param date_series: 指定清洗的日期序列，必须是series，dataframe的一列
     :param formats: formats是列表形式，可自定义添加存在的字符串格式, 可省略
+    :param errors: 'coerce' 将无法解析的值转为 NaT；'raise' 对非空无效值抛出 ValueError
     :return: 清洗后的日期序列"""
     date_formats = ['%Y-%m-%d', '%Y.%m.%d', '%Y%m%d', '%Y/%m/%d']
     if formats is None:
         formats = []
     if not isinstance(formats, list):
-        print('Parameter "formats" must be list type')
+        raise TypeError('Parameter "formats" must be list type')
+    if errors not in {'coerce', 'raise'}:
+        raise ValueError('Parameter "errors" must be "coerce" or "raise"')
     date_formats += formats
-    # 优先处理数字型
-    parsed_dates = numer_dates(date_series)
-    date_series = date_series.mask(parsed_dates.notna(), parsed_dates)
-    for fmt in date_formats:
-        # 尝试解析日期
-        parsed_dates = pd.to_datetime(date_series, format=fmt, errors='coerce')
-        # 合并成功解析的日期
-        date_series = date_series.mask(parsed_dates.notna(), parsed_dates)
+    # 内部统一使用连续位置索引，避免重复标签触发 pandas 对齐/重索引错误；
+    # 返回前恢复调用方的原索引和 Series 名称。
+    original_index = date_series.index.copy()
+    series_name = date_series.name
+    source = date_series.reset_index(drop=True).copy()
+    text = source.astype('string').str.strip()
 
-    return pd.to_datetime(date_series, errors='coerce')
+    # 优先处理 Excel 序列日期，避免数字被 pandas 当作 Unix 纳秒。
+    result = numer_dates(source)
+    datetime_mask = source.astype('object').map(
+        lambda value: isinstance(value, (pd.Timestamp, datetime, date, np.datetime64))
+    ).fillna(False).astype(bool)
+    if datetime_mask.any():
+        datetime_values = pd.Series(
+            source.loc[datetime_mask].tolist(),
+            index=source.index[datetime_mask],
+            dtype='datetime64[us]',
+        )
+        result.loc[datetime_mask] = datetime_values
+
+    for fmt in date_formats:
+        pending = (result.isna() & source.notna() & text.ne('')).fillna(False).astype(bool)
+        if not pending.any():
+            break
+        parsed_dates = pd.to_datetime(text.loc[pending], format=fmt, errors='coerce')
+        valid = parsed_dates.notna()
+        if valid.any():
+            result.loc[parsed_dates.index[valid]] = parsed_dates.loc[valid].astype('datetime64[us]')
+
+    # 只对非纯数字文本使用 pandas 宽松兜底；纯数字若未匹配上述明确格式则保持 NaT。
+    pending = (result.isna() & source.notna() & text.ne('')).fillna(False).astype(bool)
+    numeric_text = text.str.fullmatch(r'[-+]?\d+(?:\.\d+)?', na=False)
+    fallback_mask = pending & ~numeric_text
+    if fallback_mask.any():
+        # 逐值构造微秒精度日期，既兼容混合文本格式，也允许 2999-12-31 等
+        # 超出 datetime64[ns] 上限但业务上合法的开放期哨兵日期。
+        def parse_flexible_us(value):
+            try:
+                return pd.Series([value], dtype='datetime64[us]').iloc[0]
+            except (TypeError, ValueError, OverflowError):
+                return pd.NaT
+
+        fallback = text.loc[fallback_mask].map(parse_flexible_us).astype('datetime64[us]')
+        valid = fallback.notna()
+        if valid.any():
+            result.loc[fallback.index[valid]] = fallback.loc[valid]
+
+    invalid = (source.notna() & text.ne('') & result.isna()).fillna(False).astype(bool)
+    if errors == 'raise' and invalid.any():
+        field_name = str(series_name or '日期')
+        samples = text.loc[invalid].drop_duplicates().head(10).tolist()
+        raise ValueError(
+            f'{field_name}有{int(invalid.sum())}个非空日期无法解析: {samples}'
+        )
+
+    parsed_result = result.astype('datetime64[us]')
+    parsed_result.index = original_index
+    parsed_result.name = series_name
+    return parsed_result
+
+
+def parse_file_date_label(date_text, default_year=None):
+    """把文件名日期标签解析为可比较日期。
+
+    支持 ``MMDD``、``YYMMDD`` 和 ``YYYYMMDD``。四位标签需要提供
+    ``default_year``；六位和八位标签会从标签自身解析年份。
+
+    :param date_text: 文件名中的日期标签。
+    :param default_year: 四位日期标签所属年份。
+    :return: ``datetime.date``。
+    """
+    date_text = str(date_text or '').strip()
+    if len(date_text) == 4:
+        if default_year is None:
+            raise ValueError(f'四位文件名日期需要提供默认年份：{date_text}')
+        raw_value = f'{int(default_year):04d}{date_text}'
+        date_format = '%Y%m%d'
+    elif len(date_text) == 6:
+        raw_value = date_text
+        date_format = '%y%m%d'
+    elif len(date_text) == 8:
+        raw_value = date_text
+        date_format = '%Y%m%d'
+    else:
+        raise ValueError(
+            f'文件名日期仅支持 MMDD、YYMMDD、YYYYMMDD：{date_text}'
+        )
+
+    try:
+        return datetime.strptime(raw_value, date_format).date()
+    except ValueError as exc:
+        raise ValueError(f'文件名日期无效：{date_text}') from exc
+
+
+def format_file_date_label(date_text, default_year=None, output_format='%m%d'):
+    """把文件名日期标签规范成指定格式，默认返回四位 ``MMDD``。"""
+    return parse_file_date_label(date_text, default_year).strftime(output_format)
+
+
+def select_latest_dated_file(
+        directory,
+        filename_pattern,
+        label='文件',
+        default_year=None,
+        date_group='date',
+        output_format=None,
+):
+    """在指定目录按文件名日期标签选择唯一的最新文件。
+
+    ``filename_pattern`` 可以是正则字符串或已编译正则，必须包含命名捕获组
+    ``date``（可用 ``date_group`` 修改）。默认返回原始日期标签；传入
+    ``output_format='%m%d'`` 可直接得到四位日期。
+
+    :return: ``(Path, date_label)``。
+    """
+    directory = Path(directory)
+    pattern = (
+        re.compile(filename_pattern)
+        if isinstance(filename_pattern, str)
+        else filename_pattern
+    )
+    if not directory.is_dir():
+        raise FileNotFoundError(f'{label}目录不存在：{directory}')
+    if pattern is None or not hasattr(pattern, 'fullmatch'):
+        raise TypeError('filename_pattern 必须是正则字符串或已编译正则')
+
+    candidates = []
+    for path in directory.iterdir():
+        if not path.is_file() or path.name.startswith('~$'):
+            continue
+        matched = pattern.fullmatch(path.name)
+        if not matched:
+            continue
+        try:
+            date_text = matched.group(date_group)
+        except (IndexError, KeyError) as exc:
+            raise ValueError(
+                f'文件名正则缺少日期捕获组“{date_group}”：{pattern.pattern}'
+            ) from exc
+        parsed_date = parse_file_date_label(date_text, default_year)
+        candidates.append((parsed_date, date_text, path))
+
+    if not candidates:
+        raise FileNotFoundError(f'未找到{label}：{directory}')
+
+    latest_date = max(item[0] for item in candidates)
+    latest = [item for item in candidates if item[0] == latest_date]
+    if len(latest) > 1:
+        names = '、'.join(sorted(item[2].name for item in latest))
+        raise ValueError(f'{label}存在多个同日期文件，无法唯一选择：{names}')
+
+    _, date_text, path = latest[0]
+    if output_format:
+        date_text = latest_date.strftime(output_format)
+    return path, date_text
 
 def is_file_locked(path):
     """检测文件是否被占用"""

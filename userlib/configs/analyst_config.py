@@ -24,9 +24,28 @@ DEFAULT = {'dataset_ingestion': {'bundle_parts': [],
                        'source_dirs': ['goldenbull_fxs', 'goldenbull_fxs_ex'],
                        'info_file': '分析师_用户注册表.xlsx',
                        'id_column': 'f_user_id',
+                       'file_column': 'f_file_name',
                        'company_short_name_column': 'f_company',
                        'company_name_column': 'f_company_name',
-                       'skiprows': []}}
+                       'skiprows': [],
+                       'manifest_output_subdir': '',
+                       'manifest_tables': {
+                           '上传文件': {
+                               'processed_dir': 'goldenbull_fxs',
+                               'index_file': '分析师_报名资料表.xlsx',
+                               'sheet_name': 'fxs_data_list',
+                               'id_column': 'f_user_id',
+                               'file_column': 'f_file_name',
+                               'time_column': 'f_upload_time',
+                               'skiprows': []},
+                           '补充数据': {
+                               'processed_dir': 'goldenbull_fxs_ex',
+                               'index_file': '分析师_补充资料表.xlsx',
+                               'sheet_name': 'fxs_data_list_ex',
+                               'id_column': 'f_user_id',
+                               'file_column': 'f_file_name',
+                               'time_column': 'f_upload_date',
+                               'skiprows': []}}}}
 
 
 # ============================================================

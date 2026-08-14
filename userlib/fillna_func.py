@@ -384,7 +384,7 @@ def process_product(product_name, product_data, weekly_calendar):
     )
 
     # 强制使用全局周历日期（覆盖产品原日期）
-    aligned["净值日期"].fillna(aligned["对齐日期"],inplace=True)
+    aligned["净值日期"] = aligned["净值日期"].fillna(aligned["对齐日期"])
     aligned["产品全称"] = product_name  # 确保产品名称存在
 
     # 静态字段前向填充（非净值字段）

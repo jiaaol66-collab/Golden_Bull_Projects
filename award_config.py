@@ -32,14 +32,14 @@ AWARD_CONFIG = {
         "config_label": ""
     },
     "银行理财金牛奖(其他奖)": {
-        "folder": "GB_BankWM/银行金牛奖(其他)步骤",
+        "folder": "GB_BankWM/银理金牛奖(其他)步骤",
         "manifest_award": "银理其他",
         "config_module": "",
         "config_file": "",
         "config_label": ""
     },
     "分析师金牛奖": {
-        "folder": "GB_Analyst",
+        "folder": "GB_BrokerAnalyst",
         "manifest_award": "分析师",
         "config_module": "userlib.configs.analyst_config",
         "config_file": "userlib/configs/analyst_config.py",

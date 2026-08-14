@@ -3570,6 +3570,49 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
         excerpt = source_lines[-max_lines:]
         return "\n".join(excerpt[-max_lines:])
 
+    def extract_script_error_message(self, log_path):
+        if not log_path or not os.path.isfile(log_path):
+            return ""
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = [
+                    re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", line).strip()
+                    for line in f
+                    if line.strip()
+                ]
+        except OSError:
+            return ""
+        exception_pattern = re.compile(
+            r"^(?:[A-Za-z_][\w.]*?(?:Error|Exception)|KeyboardInterrupt|SystemExit)\s*:\s*.+$"
+        )
+        chinese_error_pattern = re.compile(r"^(?:错误|报错|异常)\s*[:：]\s*.+$")
+        for line in reversed(lines):
+            if exception_pattern.match(line) or chinese_error_pattern.match(line):
+                return line
+        return self.extract_error_excerpt(log_path) or (lines[-1] if lines else "")
+
+    def show_script_error_popup(self, script_path, error_message):
+        script_text = os.path.abspath(str(script_path or "").strip()) if script_path else "未知脚本"
+        error_text = str(error_message or "未知错误").strip() or "未知错误"
+        dialog_text = f"报错脚本：\n{script_text}\n\n报错信息：\n{error_text}"
+        was_topmost = False
+        try:
+            was_topmost = bool(self.attributes("-topmost"))
+        except Exception:
+            pass
+        try:
+            self.attributes("-topmost", True)
+            self.lift()
+            self.update_idletasks()
+            messagebox.showerror("脚本执行报错", dialog_text, parent=self)
+        except Exception:
+            print(dialog_text, file=sys.stderr)
+        finally:
+            try:
+                self.attributes("-topmost", was_topmost)
+            except Exception:
+                pass
+
     def update_attempt_error_snapshot(self, tab_id, run_info=None):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
@@ -4919,12 +4962,20 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
                 self.update_attempt_error_snapshot(tab_id, run_info or step_info)
                 self.append_terminal_timeline_end(tab_id, run_info or step_info, "failed")
                 self.safe_after(0, self.log_msg, tab_id, f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] ==== 执行失败: 返回码 {process.returncode} ====")
+                error_popup_message = ""
+                current_run_info = tab_data.get("current_run_info") or {}
+                if current_run_info.get("run_id") == run_id:
+                    error_popup_message = self.extract_script_error_message(log_filename)
+                    if not error_popup_message:
+                        error_popup_message = f"进程返回码 {process.returncode}"
                 if step_info.get("is_post_batch_update"):
                     self.safe_after(0, self.finish_post_batch_update, tab_id, False)
                 elif step_info.get("is_manual_code"):
                     self.safe_after(0, self.finish_manual_code_run, tab_id, step_info, False)
                 else:
                     self.safe_after(0, self.fail_current_chain, tab_id, step_info, "代码执行失败，已终止当前链条并高亮错误文件夹。")
+                if error_popup_message:
+                    self.safe_after(0, self.show_script_error_popup, target_abs_path, error_popup_message)
                 
         except Exception as e:
             self.unregister_process(tab_id, step_info.get("run_id", ""))
@@ -4932,12 +4983,20 @@ class GoldenBullTerminal(WorkspaceUIMixin, PipelineGanttMixin, ctk.CTk):
             self.append_terminal_timeline_end(tab_id, run_info or step_info, "error")
             self.safe_after(0, self.set_pause_button_state, tab_id, self.has_async_processes(tab_id))
             self.safe_after(0, self.log_msg, tab_id, f"进程拉起异常: {str(e)}")
+            current_run_info = tab_data.get("current_run_info") or {}
+            error_popup_message = (
+                f"{type(e).__name__}: {e}"
+                if current_run_info.get("run_id") == step_info.get("run_id")
+                else ""
+            )
             if step_info.get("is_post_batch_update"):
                 self.safe_after(0, self.finish_post_batch_update, tab_id, False)
             elif step_info.get("is_manual_code"):
                 self.safe_after(0, self.finish_manual_code_run, tab_id, step_info, False)
             else:
                 self.safe_after(0, self.fail_current_chain, tab_id, step_info, "进程拉起异常，已终止当前链条并高亮错误文件夹。")
+            if error_popup_message:
+                self.safe_after(0, self.show_script_error_popup, target_abs_path, error_popup_message)
 
 
     def refresh_tab_panels(self, tab_id):

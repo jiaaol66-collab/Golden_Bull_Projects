@@ -565,6 +565,26 @@ class WorkspaceUIMixin:
             return DIVIDER, BORDER, TEXT_MUTED, 1
         return ACCENT_SEGMENT_BG, BORDER, TEXT_PRIMARY, 1
 
+    def get_step_panel_outline(self, tab_data):
+        step_states = tab_data.get("step_states", {})
+        snapshot_orders = {
+            order
+            for order in tab_data.get("workspace_stepper_selected_orders_snapshot", [])
+            if order is not None
+        }
+        if tab_data.get("workspace_stepper_snapshot_active") and snapshot_orders:
+            status_values = [step_states.get(order, "pending") for order in snapshot_orders]
+        else:
+            status_values = list(step_states.values())
+
+        if tab_data.get("current_process") or tab_data.get("run_timer_running"):
+            return ACCENT
+        if any(value == "error" for value in status_values):
+            return DANGER
+        if any(value == "success" for value in status_values):
+            return SUCCESS
+        return ACCENT_SEGMENT_HOVER
+
     def get_workspace_stepper_status_map(self, tab_id, items):
         tab_data = self.active_tabs_data.get(tab_id)
         if not tab_data:
@@ -1442,15 +1462,7 @@ class WorkspaceUIMixin:
         control_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         control_col.grid_propagate(False)
 
-        status_values = list(tab_data.get("step_states", {}).values())
-        if any(value == "error" for value in status_values):
-            step_outline = DANGER
-        elif tab_data.get("current_process") or tab_data.get("run_timer_running"):
-            step_outline = ACCENT
-        elif any(value == "success" for value in status_values):
-            step_outline = SUCCESS
-        else:
-            step_outline = ACCENT_SEGMENT_HOVER
+        step_outline = self.get_step_panel_outline(tab_data)
 
         step_frame = ctk.CTkFrame(
             layout_row,

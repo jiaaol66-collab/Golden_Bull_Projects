@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>Golden Bull Terminal</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell is-workspace-gated" id="appShell">
+    <aside class="sidebar" aria-label="工作区导航">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <div class="brand-name">Golden Bull</div>
+          <div class="brand-subtitle">TERMINAL</div>
+        </div>
+      </div>
+
+      <section class="workspace-section">
+        <div class="selection-intro">
+          <p class="eyebrow">开始使用</p>
+          <h1>选择要加载的工作区</h1>
+          <p>按奖项、年份和工作区逐级选择。只有加载成功后，运行工作台才会展开。</p>
+        </div>
+        <div class="section-label-row">
+          <span class="section-label">工作区选择</span>
+          <button class="icon-button" type="button" data-action="refresh" title="刷新工作区" aria-label="刷新工作区">↻</button>
+        </div>
+        <label class="select-label" for="awardSelect">奖项</label>
+        <select id="awardSelect" class="control-select" aria-label="选择奖项"></select>
+        <label class="workspace-filter-field">
+          <span class="select-label">年份</span>
+          <select id="yearSelect" class="control-select" aria-label="选择年份"></select>
+        </label>
+        <label class="workspace-filter-field">
+          <span class="select-label">工作区</span>
+          <select id="workspaceSelect" class="control-select" aria-label="选择工作区"></select>
+        </label>
+        <div class="workspace-full-name" id="workspaceFullName" aria-live="polite"></div>
+        <button class="workspace-load-button" id="loadWorkspaceButton" type="button" data-action="load-workspace" disabled>加载工作区</button>
+        <div class="selection-status" id="selectionStatus" role="status" aria-live="polite">请选择工作区后加载</div>
+      </section>
+
+      <section class="loaded-workspaces" id="loadedWorkspaces" aria-label="已加载工作区">
+        <div class="loaded-workspaces-heading"><span>已加载</span><strong id="loadedWorkspaceCount">0</strong></div>
+        <p class="parallel-hint" id="parallelHint">不同工作区可并行；共享数据资源时请谨慎</p>
+        <div class="loaded-workspace-list" id="loadedWorkspaceList"></div>
+      </section>
+
+      <nav class="primary-nav" aria-label="功能导航">
+        <button class="nav-item is-active" type="button" data-view="dashboard"><span class="nav-glyph">⌁</span><span>运行工作台</span></button>
+        <button class="nav-item" type="button" data-view="timeline"><span class="nav-glyph">≋</span><span>流水线泳道</span><span class="nav-badge" id="laneCount">0</span></button>
+        <button class="nav-item" type="button" data-view="data"><span class="nav-glyph">▤</span><span>数据文件</span></button>
+        <button class="nav-item" type="button" data-view="resources"><span class="nav-glyph">◇</span><span>规则 / 数据集</span></button>
+        <button class="nav-item" type="button" data-view="results"><span class="nav-glyph">□</span><span>计算结果</span></button>
+        <button class="nav-item" type="button" data-view="attempts"><span class="nav-glyph">↺</span><span>历史尝试</span></button>
+      </nav>
+
+      <div class="sidebar-spacer"></div>
+      <button class="nav-item nav-management" type="button" data-view="management"><span class="nav-glyph">⚙</span><span>管理中心</span></button>
+      <div class="connection-card">
+        <span class="connection-dot" id="connectionDot"></span>
+        <div><strong id="connectionText">正在连接内核</strong><small id="connectionDetail">等待 Python API</small></div>
+      </div>
+    </aside>
+
+    <main class="main-stage">
+      <header class="topbar">
+        <div class="crumbs"><span id="awardCrumb">—</span><i>/</i><strong id="workspaceCrumb">未挂载工作区</strong></div>
+        <div class="top-actions">
+          <span class="demo-pill" id="demoPill" hidden>演示数据</span>
+          <button class="quiet-button" type="button" data-action="toggle-float">悬浮监视器</button>
+          <button class="quiet-button" type="button" data-action="open-workspace">打开工作区</button>
+          <button class="avatar-button" type="button" data-view="management" title="管理中心">GB</button>
+        </div>
+      </header>
+
+      <div class="view-stack">
+        <section class="app-view is-active" data-view-panel="dashboard">
+          <div class="hero-row">
+            <div>
+              <p class="eyebrow">当前任务</p>
+              <h1 id="workspaceTitle">请选择工作区</h1>
+              <p class="hero-description" id="workspacePath">挂载工作区后即可查看步骤与运行状态</p>
+            </div>
+            <div class="status-cluster">
+              <span class="status-chip is-idle" id="overallStatus"><i></i><span>空闲</span></span>
+              <span class="updated-time" id="updatedAt">尚未同步</span>
+            </div>
+          </div>
+
+          <div class="metrics-grid">
+            <article class="metric-card metric-primary">
+              <div class="metric-label">本轮总时间</div>
+              <div class="metric-value mono" id="totalElapsed">00:00:00</div>
+              <div class="metric-note">包含当前尝试的全部活动</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">主步骤链时间</div>
+              <div class="metric-value mono" id="mainElapsed">00:00:00</div>
+              <div class="metric-note">不包含异步任务</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">当前步骤时间</div>
+              <div class="metric-value mono" id="stepElapsed">00:00:00</div>
+              <div class="metric-note" id="currentStepNote">暂无运行步骤</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">异步任务</div>
+              <div class="metric-value"><span id="asyncRunning">0</span><small> / <span id="asyncTotal">0</span></small></div>
+              <div class="metric-note">正在运行 / 本轮总数</div>
+            </article>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel steps-panel">
+              <div class="panel-header">
+                <div><p class="eyebrow">RUN QUEUE</p><h2>步骤与运行状态</h2></div>
+                <div class="inline-actions">
+                  <button class="text-button" type="button" data-action="select-all">全选</button>
+                  <button class="text-button" type="button" data-action="select-none">全不选</button>
+                </div>
+              </div>
+              <div class="step-progress-row">
+                <div class="progress-track"><span id="progressFill"></span></div>
+                <strong id="progressText">0 / 0</strong>
+              </div>
+              <div class="step-list" id="stepList" aria-live="polite"></div>
+              <div class="run-toolbar">
+                <select id="runPlanSelect" class="run-plan" aria-label="运行方案">
+                  <option value="selected">运行所选步骤</option>
+                  <option value="all">运行全部步骤</option>
+                  <option value="failed">重跑失败步骤</option>
+                  <option value="continue">从当前步骤继续</option>
+                </select>
+                <button class="primary-button" id="startButton" type="button" data-action="start">开始运行</button>
+                <button class="danger-quiet-button" id="pauseButton" type="button" data-action="pause" disabled>暂停</button>
+              </div>
+            </section>
+
+            <aside class="panel now-panel">
+              <div class="panel-header compact"><div><p class="eyebrow">NOW RUNNING</p><h2>正在执行</h2></div><button class="icon-button" type="button" data-view="timeline" title="查看泳道图">↗</button></div>
+              <div class="now-orbit"><div class="orbit-ring"><span id="nowStepOrder">—</span></div></div>
+              <h3 id="nowStepName">当前没有任务运行</h3>
+              <p id="nowStepPath">选择步骤并开始运行</p>
+              <div class="now-timing"><span>步骤用时</span><strong class="mono" id="nowStepElapsed">00:00:00</strong></div>
+              <div class="latest-event"><span class="event-dot"></span><p id="latestEvent">等待新的运行事件</p></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="app-view" data-view-panel="timeline">
+          <div class="page-heading"><div><p class="eyebrow">TIMELINE</p><h1>流水线泳道图</h1><p>主步骤链与异步任务使用独立泳道；时间口径保持不变。</p></div><div class="heading-actions"><select id="attemptSelect" class="control-select"></select><button class="quiet-button" data-action="open-attempt">打开尝试目录</button></div></div>
+          <section class="panel timeline-panel">
+            <div class="timeline-summary" id="timelineSummary"></div>
+            <div class="timeline-scroll"><div class="timeline-chart" id="timelineChart"></div></div>
+            <div class="timeline-legend"><span><i class="legend-main"></i>主步骤</span><span><i class="legend-async"></i>异步任务</span><span><i class="legend-done"></i>已完成</span><span><i class="legend-failed"></i>失败</span></div>
+          </section>
+        </section>
+
+        <section class="app-view" data-view-panel="data">
+          <div class="page-heading"><div><p class="eyebrow">FILES</p><h1>数据文件</h1><p>浏览输出、已处理、重要文件和数据库资源。</p></div><div class="segmented" id="dataFilter"><button class="is-active" data-filter="output">输出</button><button data-filter="processed">已处理</button><button data-filter="important">重要文件</button><button data-filter="database">数据库</button></div></div>
+          <section class="panel resource-grid" id="dataGrid"></section>
+        </section>
+
+        <section class="app-view" data-view-panel="resources">
+          <div class="page-heading"><div><p class="eyebrow">INPUTS</p><h1>规则 / 所给数据集</h1><p>查看当前奖项与年份绑定的评奖规则和原始数据集。</p></div><button class="quiet-button" data-action="configure-resources">配置资源</button></div>
+          <div class="two-column-cards" id="resourceCards"></div>
+        </section>
+
+        <section class="app-view" data-view-panel="results">
+          <div class="page-heading"><div><p class="eyebrow">RESULTS</p><h1>计算结果</h1><p>集中查看本工作区产生的结果文件。</p></div><button class="quiet-button" data-action="open-results">打开结果目录</button></div>
+          <section class="panel resource-grid" id="resultGrid"></section>
+        </section>
+
+        <section class="app-view" data-view-panel="attempts">
+          <div class="page-heading"><div><p class="eyebrow">ATTEMPTS</p><h1>历史尝试</h1><p>保留每次运行的状态、耗时、步骤数及日志入口。</p></div><div class="segmented" id="attemptScope"><button class="is-active" data-scope="unarchived">未归档</button><button data-scope="archived">已归档</button></div></div>
+          <section class="panel"><div class="attempt-list" id="attemptList"></div></section>
+        </section>
+
+        <section class="app-view" data-view-panel="management">
+          <div class="page-heading"><div><p class="eyebrow">MANAGEMENT</p><h1>管理中心</h1><p>五个入口直接调用现有 Terminal 能力；实际执行结果以调度内核返回为准。</p></div></div>
+          <div class="management-grid" id="managementGrid"></div>
+        </section>
+      </div>
+
+      <section class="log-drawer is-open" id="logDrawer" aria-label="实时日志">
+        <button class="log-handle" type="button" data-action="toggle-log" aria-expanded="true">
+          <span><i class="live-dot"></i><strong>实时运行简报</strong><small>已过滤冗余输出</small></span>
+          <span class="latest-log-inline" id="latestLogInline">等待日志</span>
+          <span class="chevron">⌄</span>
+        </button>
+        <div class="log-content">
+          <div class="log-toolbar"><div class="log-filters"><button class="is-active" data-log-level="all">全部</button><button data-log-level="info">信息</button><button data-log-level="warning">警告</button><button data-log-level="error">错误</button></div><div><label class="follow-toggle"><input type="checkbox" id="autoFollow" checked> 自动跟随（3 秒）</label><button class="text-button" data-action="clear-log">清屏</button><button class="text-button" data-action="open-logs">打开完整日志目录</button></div></div>
+          <div class="log-stream mono" id="logStream" tabindex="0"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="manualCodeModal" hidden>
+    <section class="modal-panel manual-code-dialog" role="dialog" aria-modal="true" aria-labelledby="manualCodeTitle" aria-describedby="manualCodeHint">
+      <header class="modal-header">
+        <div><p class="eyebrow">MANUAL CODE</p><h2 id="manualCodeTitle">运行未编排代码</h2></div>
+        <button class="modal-close" type="button" data-action="close-manual-code" aria-label="取消并关闭">×</button>
+      </header>
+      <p class="modal-hint" id="manualCodeHint">仅能运行当前工作区清单中的代码，不接受任意文件路径。</p>
+      <label class="manual-search-field">
+        <span class="select-label">搜索代码</span>
+        <input id="manualCodeSearch" type="search" autocomplete="off" placeholder="输入名称、分组或相对路径">
+      </label>
+      <div class="manual-code-summary" id="manualCodeSummary"></div>
+      <div class="manual-code-list" id="manualCodeList" tabindex="0"></div>
+      <footer class="modal-footer">
+        <button class="quiet-button" type="button" data-action="close-manual-code">取消</button>
+      </footer>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="resourceConfigModal" hidden>
+    <section class="modal-panel resource-config-dialog" role="dialog" aria-modal="true" aria-labelledby="resourceConfigTitle" aria-describedby="resourceConfigHint">
+      <header class="modal-header">
+        <div><p class="eyebrow">WORKSPACE RESOURCES</p><h2 id="resourceConfigTitle">原始数据集 / 方案</h2></div>
+        <button class="modal-close" id="resourceConfigClose" type="button" data-action="close-resource-config" aria-label="取消并关闭">×</button>
+      </header>
+      <p class="modal-hint" id="resourceConfigHint">路径由系统选择器返回，前端不接受任意路径输入。</p>
+      <div class="resource-config-message" id="resourceConfigMessage" hidden></div>
+      <div class="resource-config-list">
+        <section class="resource-config-item">
+          <div class="resource-config-heading"><div><span class="resource-config-index">01</span><strong>原始数据集目录</strong></div><button type="button" data-resource-kind="dataset">选择原始数据集目录</button></div>
+          <div class="resource-config-path mono" id="resourceDatasetPath">尚未选择</div>
+        </section>
+        <section class="resource-config-item">
+          <div class="resource-config-heading"><div><span class="resource-config-index">02</span><strong>方案 / 规则文件</strong></div><button type="button" data-resource-kind="rule">选择方案/规则文件</button></div>
+          <div class="resource-config-path mono" id="resourceRulePath">尚未选择</div>
+        </section>
+        <section class="resource-config-item is-readonly">
+          <div class="resource-config-heading"><div><span class="resource-config-index">03</span><strong>配置文件</strong><span class="readonly-badge">只读</span></div></div>
+          <div class="resource-config-path mono" id="resourceConfigPath">未提供配置文件路径</div>
+        </section>
+      </div>
+      <footer class="modal-footer">
+        <button class="quiet-button" id="resourceConfigCancel" type="button" data-action="close-resource-config">取消</button>
+      </footer>
+    </section>
+  </div>
+
+  <section class="floating-monitor is-hidden" id="floatingMonitor" aria-label="运行悬浮窗">
+      <div class="float-titlebar pywebview-drag-region" data-drag-region>
+       <div><span class="float-status-dot"></span><span class="float-running-count" id="floatRunningCount">0 运行</span><strong id="floatWorkspace">Golden Bull Terminal</strong></div>
+      <div class="float-actions"><button data-action="float-collapse" title="切换迷你模式">—</button><button data-action="float-close" title="隐藏">×</button></div>
+    </div>
+    <div class="float-mini-body">
+      <div class="float-step-row"><span class="float-order" id="floatOrder">—</span><div><strong id="floatStep">当前没有任务运行</strong><small id="floatStatus">空闲</small></div><span class="float-time mono" id="floatTime">00:00:00</span></div>
+      <div class="float-progress"><span id="floatProgressFill"></span></div>
+      <div class="float-footer"><span id="floatProgressText">0 / 0</span><span id="floatLatestLog">等待运行</span><button data-action="float-expand">展开</button></div>
+    </div>
+    <div class="float-expanded-body">
+      <div class="float-workspace-list" id="floatWorkspaceList" aria-label="切换监控工作区"></div>
+      <div class="float-metrics"><span>本轮 <strong class="mono" id="floatTotalTime">00:00:00</strong></span><span>主链 <strong class="mono" id="floatMainTime">00:00:00</strong></span><span>异步 <strong id="floatAsync">0</strong></span></div>
+      <div class="mini-lanes" id="miniLanes"></div>
+      <div class="float-log mono" id="floatLog">等待日志</div>
+      <div class="float-command-row">
+        <button class="float-pause" data-action="float-pause">暂停</button>
+        <button class="float-open-main" data-action="open-main">打开完整 Terminal</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
