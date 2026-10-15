@@ -1623,7 +1623,7 @@ class TerminalBridge:
             matches: list[int] = []
 
             def collect(hwnd: int, _extra: Any) -> None:
-                if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == "金牛奖 Terminal":
+                if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) in {"金牛奖评选管理系统", "金牛奖 Terminal"}:
                     matches.append(hwnd)
 
             win32gui.EnumWindows(collect, None)

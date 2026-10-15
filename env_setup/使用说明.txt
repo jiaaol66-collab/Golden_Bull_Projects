@@ -1,0 +1,66 @@
+Golden Bull 一键环境配置包（2026-10-15 命令行说明）
+
+一、准备
+1. 先取得完整 Golden_Bull_Projects 项目，根目录应有 base.txt、userlib 等代码。
+2. 将本 ZIP 解压到该项目根目录，得到“一键配置环境.cmd”和“env_setup”文件夹。
+   ZIP 只含配置入口；不含项目代码、Python 安装器或依赖包。
+3. 使用 64 位 Windows，能运行 powershell.exe，并能写入项目目录和当前用户目录。
+   首次安装需联网下载 Python 和 PyPI 依赖，无需预装 Python、Conda 或 Anaconda。
+   预期自动安装 Python 的流程仍需无 Python 的全新 Windows 实测，见下方验证边界。
+
+二、运行（将示例路径换成实际项目位置）
+在 PowerShell 中，从项目目录运行：
+  Set-Location -LiteralPath 'E:\work\SFRC\Golden_Bull_Projects'
+  .\一键配置环境.cmd
+
+在 PowerShell 中，从其他目录直接运行：
+  & 'E:\work\SFRC\Golden_Bull_Projects\一键配置环境.cmd'
+
+在 CMD 命令提示符中，从项目目录运行：
+  cd /d "E:\work\SFRC\Golden_Bull_Projects"
+  一键配置环境.cmd
+
+在 CMD 中，从其他目录直接运行：
+  "E:\work\SFRC\Golden_Bull_Projects\一键配置环境.cmd"
+从另一个 .bat/.cmd 调用时，在入口路径前加 call。
+
+双击和上述 CMD 入口结束后均等待按键。需要结束后直接返回命令行时，
+在 PowerShell 或 CMD 中直接执行同一个脚本（任何目录均可）：
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "E:\work\SFRC\Golden_Bull_Projects\env_setup\setup.ps1"
+
+三、只检查已有环境，不安装或更新依赖
+在 PowerShell 或 CMD 中从任何目录执行：
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "E:\work\SFRC\Golden_Bull_Projects\env_setup\setup.ps1" -CheckOnly
+
+也可在项目目录的 PowerShell 中执行：
+  .\一键配置环境.cmd -CheckOnly
+2026-10-15 起 CMD 入口转发参数，使用 Windows CRLF 换行，并仅在本次子进程内
+重置模块搜索路径，兼容从 PowerShell 7 调用；不改用户或系统的持久配置。
+此方式结束后会等待按键。
+CheckOnly 不创建 myenv，不刷新安装日志或结果 JSON；查看本次终端输出及退出码，
+不要把磁盘上的旧 PASS 当作本次检查结果。退出码 0 表示通过，1 表示失败。
+
+四、生成位置与重跑
+自动使用 Python 3.11.3 x64，在项目根目录创建 myenv，安装 163 项固定依赖，
+核验全部锁定版本、pip check（依赖兼容性）及普通项目导入。
+安装器从 python.org 下载，先核验 Python Software Foundation 数字签名。
+仅按当前 Windows 用户安装，不改系统 PATH；找不到可复用版本时安装到：
+  %LOCALAPPDATA%\GoldenBullPython\3.11.3
+已有正确 myenv 会复用并补齐依赖。后续使用项目根 myenv\Scripts\python.exe，
+无需激活；入口不自动注册 Notebook 内核，注册方法见项目 README。
+
+普通配置日志和结果：项目根 logs\environment_setup\latest.log 和 latest.json。
+若目录、锁文件或并发锁等预检查先失败，可能尚未写入本次日志，以终端错误为准。
+下载或依赖安装中断后，待配置进程结束，再执行原命令即可继续；保留 myenv 和
+logs\environment_setup\pipcache，不为重跑删除环境，不要同时启动多次配置。
+版本不符、损坏或链接形式的 myenv 会保留并报错；先退出使用它的终端、IDE、
+Notebook，保留旧环境，确认后改名留存再处理。
+
+Wind/iFinD 终端、Office、供应商授权和 Mosek 等外部许可仍需另行配置。
+本入口只准备环境，业务和数据库步骤仍按原方式手动运行。
+
+五、验证边界
+2026-10-15 核验本机已有环境及命令行入口，未重复全量安装依赖。
+2026-10-09 已验证：复用已有 Python 的空 myenv 创建及全部 163 项依赖实际安装、
+pip check 和项目导入。Python 官方安装器历史下载和签名核验通过。
+尚未在没有 Python 的全新 Windows 上执行系统安装，不能将空 myenv 测试视为该项通过。

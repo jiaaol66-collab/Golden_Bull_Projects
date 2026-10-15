@@ -133,34 +133,32 @@ path_t = 'temp'
 if custom_dialog('Configuration', f'即将生成{title}新工作区(基于{code}和{inst})，是否确定？', 'confirm', '是的', '不，选择别的'):
     pass
 else:
-    fields = [
-        {
-            'label': 'codes', 'default': '', 'hint': f'存在 {list(code_dir.keys())} 的代码, 建议选择最新代码',
-            'validate': lambda v: validate_numeric(v, lower=min(code_dir), upper=max(code_dir)+1, type_='int')
-        },
-        {
-            'label': 'instructions', 'default': '', 'hint': f'存在 {list(ins_dir.keys())} 的说明, 建议选择最新说明',
-            'validate': lambda v: validate_numeric(v, lower=min(ins_dir), upper=max(ins_dir)+1, type_='int')
-        },
-    ]
-    chose = custom_input_dialog('请选择代码和说明', fields)
-    code = code_dir[int(chose['codes'])]
-    inst = ins_dir[int(chose['instructions'])]
+    chose = custom_backup_selection_dialog('请选择代码和说明', '代码备份')
+    if chose is None:
+        print('已取消创建新工作区。')
+        sys.exit(0)
+    code = chose['code']
+    inst = chose['instruction']
 
 print(code)
 print(inst)
 
 info = pd.read_excel(f'代码备份/{code}/工作区设置/文件结构.xlsx', sheet_name='工作区').fillna('.')
-info0 = info[info['步骤'] == 0].copy()
+step_numbers = pd.to_numeric(info['步骤'], errors='coerce')
+info0 = info[step_numbers.eq(0)].copy()
+step_separator = detect_workspace_step_separator(info, f'代码备份/{code}')
+step0_dir = f'step_0{step_separator}前期准备'
+print(f'工作区目录格式: {step0_dir}（根据 {code} 自动识别）')
 print(info0[['工作区文件夹','代码/说明','相应代码和说明文件','保存在资料中的名称']].head())
 
 make_dir(path_t)
-make_dir(path_t + '/step_0_前期准备')
+make_dir(f'{path_t}/{step0_dir}')
 make_dir(path_t + '/资料')
-make_dir(path_t + '/资料/代码/notebook')
+make_dir('已处理')
 
 copy_file(f'代码备份/{code}', f'{path_t}/资料/代码')
 copy_file(f'代码备份/{inst}', f'{path_t}/资料/说明')
+make_dir(path_t + '/资料/代码/notebook')
 
 # 更新工具/默认代码到新工作区—————————————————————————————————————————————————————————————————
 tool_py = ['update_all_code.py', 'inherit.py', 'flush_all_data.py', 'reset_all_code.py']
@@ -183,9 +181,36 @@ for py in os.listdir(rel+'_默认代码'):
     else:
         copy_file(f'{rel}_默认代码/{py}', f'{path_t}/资料/说明/{py}',1)
 # ————————————————————————————————————————————————————————————————————————————————————————————
+def normalize_structure_part(value):
+    value = str(value).strip()
+    return '' if value in ('', '.', 'nan', 'None') else value
+
+
+folder_columns = ['子文件夹1', '子文件夹2', '子文件夹3', '子文件夹4']
 for i, row in info0.iterrows():
-    copy_file(f'{path_t}/资料/{row["代码/说明"]}/{row["代码子文件夹"]}/{row["保存在资料中的名称"]}',
-              f'{path_t}/step_{row["步骤"]}_{row["工作区文件夹"]}/{row["子文件夹1"]}/{row["子文件夹2"]}/{row["子文件夹3"]}/{row["子文件夹4"]}/{row["相应代码和说明文件"]}')
+    destination_dir = os.path.join(
+        path_t,
+        step0_dir,
+        *(part for part in (normalize_structure_part(row[column]) for column in folder_columns) if part),
+    )
+    destination_name = normalize_structure_part(row['相应代码和说明文件'])
+
+    if not destination_name:
+        make_dir(destination_dir)
+        continue
+
+    make_dir(destination_dir, 1)
+    source_area = normalize_structure_part(row['代码/说明'])
+    source_subdir = normalize_structure_part(row['代码子文件夹'])
+    source_name = normalize_structure_part(row['保存在资料中的名称'])
+    if not source_area or not source_name:
+        print(f'文件结构第 {i} 行源文件配置不完整，跳过复制: {destination_name}')
+        continue
+
+    source_path = os.path.join(path_t, '资料', source_area)
+    if source_subdir:
+        source_path = os.path.join(source_path, source_subdir)
+    copy_file(os.path.join(source_path, source_name), os.path.join(destination_dir, destination_name))
 
 create_empty_file(f'{path_t}/to_be_deleted.txt')
 inherit_source = f'代码备份/{code}/更新代码/inherit.py'

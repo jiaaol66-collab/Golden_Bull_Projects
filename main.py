@@ -24,7 +24,7 @@ def build_ui_url(floating: bool = False) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="金牛奖 Terminal 新界面")
+    parser = argparse.ArgumentParser(description="金牛奖评选管理系统")
     parser.add_argument("--floating", action="store_true", help="启动始终置顶的运行监视器")
     parser.add_argument("--workspace", default="", help="默认工作区 ID")
     parser.add_argument("--debug", action="store_true", help="启用 WebView 调试模式")
@@ -88,7 +88,7 @@ def run_webview(bridge: TerminalBridge, floating: bool, debug: bool) -> int:
 
     url = build_ui_url(floating=floating)
     window_options = {
-        "title": "运行监视器" if floating else "金牛奖 Terminal",
+        "title": "运行监视器" if floating else "金牛奖评选管理系统",
         "url": url,
         "js_api": bridge,
         "background_color": "#F1F8F3",

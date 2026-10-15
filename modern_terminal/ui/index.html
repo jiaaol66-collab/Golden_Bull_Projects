@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light">
-  <title>Golden Bull Terminal</title>
+  <title>金牛奖评选管理系统</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="management.css">
 </head>
 <body>
   <div class="app-shell is-workspace-gated" id="appShell">
@@ -13,8 +14,8 @@
       <div class="brand-row">
         <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
         <div>
-          <div class="brand-name">Golden Bull</div>
-          <div class="brand-subtitle">TERMINAL</div>
+          <div class="brand-name">金牛奖</div>
+          <div class="brand-subtitle">评选管理系统 · GOLDEN BULL</div>
         </div>
       </div>
 
@@ -50,8 +51,11 @@
       </section>
 
       <nav class="primary-nav" aria-label="功能导航">
-        <button class="nav-item is-active" type="button" data-view="dashboard"><span class="nav-glyph">⌁</span><span>运行工作台</span></button>
+        <span class="nav-section-label">工作台</span>
+        <button class="nav-item is-active" type="button" data-view="overview"><span class="nav-glyph">▦</span><span>工作总览</span></button>
+        <button class="nav-item" type="button" data-view="dashboard"><span class="nav-glyph">▷</span><span>任务执行</span></button>
         <button class="nav-item" type="button" data-view="timeline"><span class="nav-glyph">≋</span><span>流水线泳道</span><span class="nav-badge" id="laneCount">0</span></button>
+        <span class="nav-section-label">评选资料</span>
         <button class="nav-item" type="button" data-view="data"><span class="nav-glyph">▤</span><span>数据文件</span></button>
         <button class="nav-item" type="button" data-view="resources"><span class="nav-glyph">◇</span><span>规则 / 数据集</span></button>
         <button class="nav-item" type="button" data-view="results"><span class="nav-glyph">□</span><span>计算结果</span></button>
@@ -78,7 +82,21 @@
       </header>
 
       <div class="view-stack">
-        <section class="app-view is-active" data-view-panel="dashboard">
+        <section class="app-view is-active" data-view-panel="overview">
+          <div class="page-heading"><div><p class="eyebrow">GOLDEN BULL / WORKSPACE</p><h1>工作总览</h1><p>从数据准备到评选结果，集中管理每一轮工作。</p></div><button class="quiet-button" data-action="refresh">↻ 刷新状态</button></div>
+          <section class="overview-banner"><div><span class="banner-tag">当前工作区</span><h2 id="overviewName">等待加载工作区</h2><p id="overviewContext">选择奖项与年份，开始本轮评选</p><button class="primary-button" data-view="dashboard">进入任务执行 <span aria-hidden="true">↗</span></button></div><div class="banner-emblem" aria-hidden="true">GB<span>GOLDEN BULL AWARDS</span></div></section>
+          <div class="overview-stats" id="overviewStats"></div>
+          <div class="overview-columns">
+            <section class="panel overview-panel"><div class="panel-header"><div><p class="eyebrow">WORKFLOW</p><h2>评选工作流程</h2></div><span class="subtle-label">按工作需要进入</span></div><div class="workflow-links">
+              <button data-view="resources"><b>01</b><span><strong>准备评选资料</strong><small>规则方案 · 原始数据集 · 年度参数</small></span><i>↗</i></button>
+              <button data-view="dashboard"><b>02</b><span><strong>执行计算任务</strong><small>编排步骤 · 运行与暂停 · 实时日志</small></span><i>↗</i></button>
+              <button data-view="data"><b>03</b><span><strong>检查数据文件</strong><small>步骤输出 · 已处理 · 重要文件 · 数据库</small></span><i>↗</i></button>
+              <button data-view="results"><b>04</b><span><strong>查看评选结果</strong><small>集中查看本工作区的计算产出</small></span><i>↗</i></button>
+            </div></section>
+            <section class="panel overview-panel"><div class="panel-header"><div><p class="eyebrow">ACTIVITY</p><h2>当前运行动态</h2></div><button class="text-button" data-view="timeline">查看流水线 ↗</button></div><div id="overviewActivity"></div><div class="overview-shortcuts"><button class="quiet-button" data-view="attempts">历史运行记录</button><button class="quiet-button" data-view="management">工作区设置</button></div></section>
+          </div>
+        </section>
+        <section class="app-view" data-view-panel="dashboard">
           <div class="hero-row">
             <div>
               <p class="eyebrow">当前任务</p>
@@ -181,13 +199,13 @@
         </section>
 
         <section class="app-view" data-view-panel="management">
-          <div class="page-heading"><div><p class="eyebrow">MANAGEMENT</p><h1>管理中心</h1><p>五个入口直接调用现有 Terminal 能力；实际执行结果以调度内核返回为准。</p></div></div>
+          <div class="page-heading"><div><p class="eyebrow">MANAGEMENT</p><h1>管理中心</h1><p>创建工作区、维护执行步骤、配置年度参数与评选资料。</p></div><button class="quiet-button" data-action="open-legacy">打开完整功能窗口 ↗</button></div>
           <div class="management-grid" id="managementGrid"></div>
         </section>
       </div>
 
-      <section class="log-drawer is-open" id="logDrawer" aria-label="实时日志">
-        <button class="log-handle" type="button" data-action="toggle-log" aria-expanded="true">
+      <section class="log-drawer" id="logDrawer" aria-label="实时日志">
+        <button class="log-handle" type="button" data-action="toggle-log" aria-expanded="false">
           <span><i class="live-dot"></i><strong>实时运行简报</strong><small>已过滤冗余输出</small></span>
           <span class="latest-log-inline" id="latestLogInline">等待日志</span>
           <span class="chevron">⌄</span>

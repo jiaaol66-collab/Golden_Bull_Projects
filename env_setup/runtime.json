@@ -1,0 +1,9 @@
+{
+  "python_version": "3.11.3",
+  "architecture": "x64",
+  "python_installer_url": "https://www.python.org/ftp/python/3.11.3/python-3.11.3-amd64.exe",
+  "requirements_sha256": "c059ffd606daf9a434175f62d431887a981d4a8460cddd377da85faee3c53b65",
+  "source_requirements_sha256": "4d558a17e974499897f39cb1101c19b24719c6594094b5e5a847d01ac312f52d",
+  "dependency_count": 163,
+  "bootstrap_wheel_version": "0.45.1"
+}

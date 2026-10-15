@@ -44,6 +44,8 @@ if rge == 7:
 else:
     appe = f'({YR - rge}~{YR})'
 
+os.mkdir(f'{YR}')
+
 with pd.ExcelWriter(f'{YR}/国债分年期数据{appe}.xlsx') as writer:
     for term in df_bond['标准期限说明'].unique():
         df_bond[df_bond['标准期限说明'] == term].sort_values(by=['日期']).to_excel(writer, sheet_name = term, index=False)

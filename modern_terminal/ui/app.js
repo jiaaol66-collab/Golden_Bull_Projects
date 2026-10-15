@@ -7,7 +7,7 @@
     connected: false,
     demo: false,
     snapshot: null,
-    view: "dashboard",
+    view: "overview",
     dataFilter: "output",
     attemptScope: "unarchived",
     logLevel: "all",
@@ -78,7 +78,7 @@
     selection_context: { award: "私募金牛奖", year: "2026", workspace_id: "pri-2026" },
     parallel_capability: { supported: true, caution: "不同工作区可并行；共享数据资源时请谨慎" },
     active_workspace_id: "pri-2026",
-    workspace: { id: "pri-2026", name: "私募金牛 · 周度评选", display_name: "私募金牛 · 周度评选", award: "私募金牛奖", year: "2026", path: "E:\\work\\SIDE\\Golden_Bull_Projects\\GB_PriFund\\2026工作区" },
+    workspace: { id: "pri-2026", name: "私募金牛 · 周度评选", display_name: "私募金牛 · 周度评选", award: "私募金牛奖", year: "2026", path: "GB_PriFund/2026工作区" },
     run: { status: "running", attempt_id: "demo-260810", attempt_name: "第 4 次尝试", total_elapsed_seconds: 1213, main_elapsed_seconds: 1041, current_step_elapsed_seconds: 188, completed_steps: 3, total_steps: 7, async_running: 1, async_total: 2 },
     steps: [
       { order: 0, name: "部署工作区", path: "step_0 / inherit.py", status: "done", selected: true, duration_seconds: 16 },
@@ -110,9 +110,9 @@
       database: [{ name: "wind_private_fund.duckdb", kind: "DB", path: "数据库 / wind_private_fund.duckdb", modified: "今天 09:51", size: "1.4 GB" }]
     },
     resources: [
-      { title: "评奖规则", description: "当前奖项和年份绑定的规则文件", path: "E:\\资料\\2026私募金牛评奖规则.docx", status: "已连接", action: "select-rule" },
-      { title: "原始数据集", description: "Terminal 管理的本轮数据源目录", path: "E:\\data\\GB_PriFund\\原始数据集", status: "已连接", action: "select-dataset" },
-      { title: "私募年度参数", description: "当前奖项的年度计算参数配置", path: "E:\\work\\SIDE\\Golden_Bull_Projects\\userlib\\configs\\prifund_config.py", status: "可编辑", action: "open-configs" }
+      { title: "评奖规则", description: "当前奖项和年份绑定的规则文件", path: "GB_PriFund/原始数据集/2026/2026私募金牛评奖规则.docx", status: "已连接", action: "select-rule" },
+      { title: "原始数据集", description: "Terminal 管理的本轮数据源目录", path: "GB_PriFund/原始数据集", status: "已连接", action: "select-dataset" },
+      { title: "私募年度参数", description: "当前奖项的年度计算参数配置", path: "userlib/configs/prifund_config.py", status: "可编辑", action: "open-configs" }
     ],
     results: [{ name: "私募金牛产品-top1000汇总.xlsx", kind: "XLSX", path: "计算结果 / Top1000", modified: "今天 10:41", size: "4.8 MB" }, { name: "机构评分结果.xlsx", kind: "XLSX", path: "计算结果 / 机构", modified: "今天 10:40", size: "1.3 MB" }, { name: "策略分类统计.xlsx", kind: "XLSX", path: "计算结果 / 统计", modified: "今天 10:38", size: "820 KB" }],
     attempts: [
@@ -184,6 +184,8 @@
   }
   function useDemo(reason) {
     state.connected = false; state.demo = true;
+    // Explicit browser preview may explore the UI, but every write remains blocked by safeAction.
+    if (new URLSearchParams(location.search).get("preview") === "1") state.sessionLoaded = true;
     $("#demoPill").hidden = false;
     setConnection("demo", "当前为演示数据", reason);
     applySnapshot(normalizeSnapshot(structuredCloneSafe(demoSnapshot)));
@@ -221,7 +223,19 @@
     syncSnapshotLogs(snapshot.logs, `${workspaceId}::${String(snapshot.run.attempt_id || "")}`);
     renderSelectors(); renderLoadedWorkspaces(); renderHeader(); renderMetrics(); renderSteps(); renderNow(); renderTimeline(); renderFiles(); renderResources(); renderResults(); renderAttempts(); renderManagement(); renderLogs();
     updateWorkspaceGate();
-    renderFloat();
+    renderFloat(); renderOverview();
+  }
+
+  function renderOverview() {
+    const s = state.snapshot, status = normalizeStatus(s.run.status);
+    $("#overviewName").textContent = s.workspace.display_name || s.workspace.name || "等待加载工作区";
+    $("#overviewContext").textContent = [s.workspace.award, s.workspace.year, status.label].filter(Boolean).join(" / ");
+    const done = s.steps.filter(x => ["done", "success"].includes(String(x.status).toLowerCase())).length;
+    const failed = s.steps.filter(x => ["failed", "error"].includes(String(x.status).toLowerCase())).length;
+    const metrics = [["已加载工作区", s.loaded_workspaces.length, "本次会话"], ["已完成步骤", `${done} / ${s.steps.length}`, "当前工作区"], ["待处理异常", failed, failed ? "进入任务执行查看" : "当前步骤无失败记录"], ["结果文件", s.results.length, "已发现的计算产出"]];
+    $("#overviewStats").innerHTML = metrics.map(([label, value, note], i) => `<article class="overview-stat"><span>${label}</span><strong class="${i === 2 && failed ? "attention-value" : ""}">${value}</strong><small>${note}</small></article>`).join("");
+    const logs = state.logLines.slice(-4).reverse();
+    $("#overviewActivity").innerHTML = `<div class="activity-status"><span class="mini-status is-${status.css}"><i></i>${status.label}</span><strong>${escapeHtml(currentStep()?.name || "暂无执行中的步骤")}</strong></div>` + (logs.length ? logs.map(x => `<div class="activity-item"><span class="activity-dot ${x.level === "error" ? "is-error" : ""}"></span><div><p>${escapeHtml(x.message || "")}</p><small>${escapeHtml(x.ts || "")} · ${escapeHtml(x.source || "运行日志")}</small></div></div>`).join("") : '<div class="empty-state">尚无运行记录。加载工作区后，可在任务执行页选择步骤。</div>');
   }
 
   function renderSelectors() {
@@ -867,7 +881,7 @@
       state.logClearWatermarks.set(streamId, Math.max(Number(state.logClearWatermarks.get(streamId) || -1), Number(line.cursor)));
     });
     state.logLines = [];
-    renderLogs(); renderNow(); renderFloat();
+    renderLogs(); renderNow(); renderFloat(); renderOverview();
   }
   function renderFloat() {
     if (!state.snapshot) return;
@@ -921,6 +935,7 @@
     if (!state.snapshot) { toast("正在连接调度内核，请稍候"); return; }
     const w = state.snapshot.workspace || {};
     if (action === "refresh") return state.demo ? applySnapshot(structuredCloneSafe(demoSnapshot)) : safeAction("get_state").then(x => x && x.ok !== false && applySnapshot(normalizeSnapshot(x)));
+    if (action === "open-legacy") return safeAction("launch_legacy_terminal");
     if (action === "load-workspace") return activateWorkspace(state.selectedWorkspaceId || $("#workspaceSelect").value, true);
     if (action === "select-all" || action === "select-none") { state.selectedSteps = action === "select-all" ? new Set(state.snapshot.steps.map(s => String(s.order))) : new Set(); state.selectedStepsDirty = true; renderSteps(); renderHeader(); return safeAction("set_selected_steps", { workspace_id: w.id, orders: Array.from(state.selectedSteps).map(Number) }).then(result => { if (result && result.ok !== false) state.selectedStepsDirty = false; return result; }); }
     if (action === "start") return startWorkspaceRun(w.id);

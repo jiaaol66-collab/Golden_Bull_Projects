@@ -812,6 +812,289 @@ def custom_input_dialog(title, fields):
     return result['value']
 
 
+def detect_workspace_step_separator(workspace_info, code_backup_dir=None):
+    """根据所选代码版本识别 ``step_编号`` 与目录名之间的分隔符。
+
+    旧版工作区使用 ``step_0 前期准备``（空格），新版使用
+    ``step_0_前期准备``（下划线）。优先读取版本自带的文件结构表，
+    再从该版本的运行脚本中兜底识别；无法识别时采用新版下划线格式。
+    """
+    entry_names = set()
+    try:
+        if "相应代码和说明文件" in workspace_info.columns:
+            entry_names = {
+                str(value).strip()
+                for value in workspace_info["相应代码和说明文件"].tolist()
+                if str(value).strip() not in ("", ".", "nan", "None")
+            }
+    except (AttributeError, KeyError, TypeError):
+        pass
+
+    has_old_entry = "运行此文件.py" in entry_names
+    has_new_entry = "setup.py" in entry_names
+    if has_old_entry and not has_new_entry:
+        return " "
+    if has_new_entry and not has_old_entry:
+        return "_"
+
+    if code_backup_dir:
+        update_dir = os.path.join(os.fspath(code_backup_dir), "更新代码")
+        for filename in ("inherit.py", "test.py", "main_script.py", "main_script[cal].py"):
+            script_path = os.path.join(update_dir, filename)
+            if not os.path.isfile(script_path):
+                continue
+            script_text = ""
+            for encoding in ("utf-8-sig", "gb18030"):
+                try:
+                    with open(script_path, "r", encoding=encoding) as script_file:
+                        script_text = script_file.read()
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except OSError:
+                    break
+            if "step_0_前期准备" in script_text:
+                return "_"
+            if re.search(r"step_0\s+前期准备", script_text):
+                return " "
+
+    return "_"
+
+
+def custom_backup_selection_dialog(title, backup_dir):
+    """从备份目录中分别选择代码和说明版本。
+
+    列表展示版本、备注首行（功能摘要）和备份时间标记；鼠标悬停在任意
+    版本上时显示完整备注。返回值中的 ``code`` / ``instruction`` 是目录名，
+    用户取消时返回 ``None``。
+    """
+    backup_dir = os.path.abspath(os.fspath(backup_dir))
+
+    def read_note(path):
+        if not os.path.isfile(path):
+            return ""
+        for encoding in ("utf-8-sig", "gb18030"):
+            try:
+                with open(path, "r", encoding=encoding) as note_file:
+                    return note_file.read().strip()
+            except UnicodeDecodeError:
+                continue
+            except OSError:
+                return ""
+        return ""
+
+    def version_key(name):
+        version = name.rsplit("v", 1)[-1]
+        try:
+            return 1, int(version)
+        except (TypeError, ValueError):
+            return 0, version
+
+    def load_options(prefix):
+        options = []
+        try:
+            folder_names = os.listdir(backup_dir)
+        except OSError:
+            folder_names = []
+
+        for folder_name in folder_names:
+            folder_path = os.path.join(backup_dir, folder_name)
+            if not folder_name.startswith(f"{prefix}_v") or not os.path.isdir(folder_path):
+                continue
+
+            marker_names = [
+                name for name in os.listdir(folder_path)
+                if name.startswith("备份时间_")
+            ]
+            marker_time = max(marker_names)[len("备份时间_"):] if marker_names else "未标记"
+            note = read_note(os.path.join(folder_path, "备注.txt"))
+            summary = next((line.strip() for line in note.splitlines() if line.strip()), "未填写备注")
+            options.append({
+                "name": folder_name,
+                "summary": summary,
+                "marker_time": marker_time,
+                "note": note or "未填写备注",
+            })
+
+        return sorted(options, key=lambda item: version_key(item["name"]), reverse=True)
+
+    code_options = load_options("代码")
+    instruction_options = load_options("说明")
+    if not code_options or not instruction_options:
+        missing = []
+        if not code_options:
+            missing.append("代码")
+        if not instruction_options:
+            missing.append("说明")
+        custom_dialog(
+            "缺少备份",
+            f"{backup_dir} 中未找到{'和'.join(missing)}备份。",
+            "error",
+        )
+        return None
+
+    root = get_root()
+    dialog = ctk.CTkToplevel(root)
+    dialog.attributes("-topmost", True)
+    dialog.title(title)
+    dialog.minsize(980, 520)
+
+    ctk.CTkLabel(
+        dialog,
+        text="请选择要用于新工作区的代码和说明版本；鼠标悬停版本可查看完整备注。",
+        font=("Microsoft YaHei", 11, "bold"),
+        anchor="w",
+    ).pack(fill="x", padx=20, pady=(18, 10))
+
+    lists_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    lists_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+    lists_frame.grid_columnconfigure(0, weight=1, uniform="backup-list")
+    lists_frame.grid_columnconfigure(1, weight=1, uniform="backup-list")
+    lists_frame.grid_rowconfigure(0, weight=1)
+
+    row_options = {}
+
+    def create_list(column, label, options):
+        panel = ctk.CTkFrame(lists_frame)
+        panel.grid(row=0, column=column, sticky="nsew", padx=5)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            panel, text=label, font=("Microsoft YaHei", 12, "bold"), anchor="w"
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 6))
+
+        tree = ttk.Treeview(
+            panel,
+            columns=("version", "summary", "marker_time"),
+            show="headings",
+            selectmode="browse",
+        )
+        tree.heading("version", text="版本")
+        tree.heading("summary", text="功能摘要")
+        tree.heading("marker_time", text="标记时间")
+        tree.column("version", width=175, minwidth=145, anchor="w")
+        tree.column("summary", width=225, minwidth=150, anchor="w")
+        tree.column("marker_time", width=185, minwidth=155, anchor="w")
+        tree.grid(row=1, column=0, sticky="nsew", padx=(12, 0), pady=(0, 12))
+
+        scrollbar = ttk.Scrollbar(panel, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 12), pady=(0, 12))
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        option_map = {}
+        for option in options:
+            summary = option["summary"]
+            if len(summary) > 34:
+                summary = summary[:33] + "…"
+            item_id = tree.insert(
+                "",
+                "end",
+                values=(option["name"], summary, option["marker_time"]),
+            )
+            option_map[item_id] = option
+
+        first_item = tree.get_children()[0]
+        tree.selection_set(first_item)
+        tree.focus(first_item)
+        row_options[tree] = option_map
+        return tree
+
+    code_tree = create_list(0, "代码", code_options)
+    instruction_tree = create_list(1, "说明", instruction_options)
+
+    tooltip = {"window": None, "tree": None, "item": None}
+
+    def hide_tooltip(_event=None):
+        if tooltip["window"] is not None:
+            tooltip["window"].destroy()
+        tooltip.update(window=None, tree=None, item=None)
+
+    def show_tooltip(event):
+        tree = event.widget
+        item_id = tree.identify_row(event.y)
+        if not item_id:
+            hide_tooltip()
+            return
+        if tooltip["tree"] is tree and tooltip["item"] == item_id:
+            return
+
+        hide_tooltip()
+        option = row_options[tree][item_id]
+        popup = tk.Toplevel(dialog)
+        popup.wm_overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(bg="#1f2937")
+        tk.Label(
+            popup,
+            text=f"{option['name']}\n标记时间：{option['marker_time']}\n\n{option['note']}",
+            justify="left",
+            anchor="nw",
+            wraplength=520,
+            bg="#1f2937",
+            fg="#f9fafb",
+            padx=12,
+            pady=10,
+            font=("Microsoft YaHei", 9),
+        ).pack()
+        popup.wm_geometry(f"+{event.x_root + 14}+{event.y_root + 14}")
+        tooltip.update(window=popup, tree=tree, item=item_id)
+
+    for tree in (code_tree, instruction_tree):
+        tree.bind("<Motion>", show_tooltip)
+        tree.bind("<Leave>", hide_tooltip)
+
+    result = {"value": None}
+
+    def selected_option(tree):
+        selection = tree.selection()
+        return row_options[tree].get(selection[0]) if selection else None
+
+    def close(value):
+        hide_tooltip()
+        result["value"] = value
+        try:
+            dialog.grab_release()
+        except tk.TclError:
+            pass
+        dialog.destroy()
+
+    def on_ok(_event=None):
+        code_option = selected_option(code_tree)
+        instruction_option = selected_option(instruction_tree)
+        if code_option and instruction_option:
+            close({
+                "code": code_option["name"],
+                "instruction": instruction_option["name"],
+            })
+
+    button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    button_frame.pack(fill="x", padx=20, pady=(0, 18))
+    ctk.CTkButton(
+        button_frame, text="取消", width=90, fg_color="gray", command=lambda: close(None)
+    ).pack(side="right", padx=(8, 0))
+    ctk.CTkButton(
+        button_frame, text="确定", width=90, command=on_ok
+    ).pack(side="right")
+
+    dialog.protocol("WM_DELETE_WINDOW", lambda: close(None))
+    dialog.bind("<Escape>", lambda _event: close(None))
+    dialog.bind("<Return>", on_ok)
+    code_tree.bind("<Double-1>", lambda _event: dialog.after_idle(on_ok))
+    instruction_tree.bind("<Double-1>", lambda _event: dialog.after_idle(on_ok))
+
+    dialog.update_idletasks()
+    width = max(dialog.winfo_width(), 980)
+    height = max(dialog.winfo_height(), 520)
+    x = (dialog.winfo_screenwidth() - width) // 2
+    y = (dialog.winfo_screenheight() - height) // 2
+    dialog.geometry(f"{width}x{height}+{x}+{y}")
+    dialog.grab_set()
+    code_tree.focus_set()
+    dialog.wait_window()
+    return result["value"]
+
+
 def check_with_retry(path, max_retries=3):
     """完全稳定版检测逻辑"""
     for attempt in range(max_retries + 1):
@@ -2148,21 +2431,17 @@ def chunks_apart(df, size=1e6):
     """ 分割大型数据框至若干数据块(100万行为界限,可选)
 
     :param df: 分割的数据框 - (pd.DataFrame)
-    :param size: 分割的单位, 默认1000000, 可省略"""
-    mount = len(df)
-
+    :param size: 分割的单位, 默认1000000, 可省略；0表示不分块，负数报错
+    注: param size 为实际的数据量, 不是导出后的工作表行数。
+    空数据框返回空列表；非空块按原行顺序拆分并重置索引，不修改输入。"""
     chunk_size = int(size)
-
-    num_chunks = int(mount // chunk_size + 1)
-
-    chunks = []
-    print('number of chunks:',num_chunks)
-    num = num_chunks - 1
-    for i in range(num):
-        chunks.append(df.iloc[chunk_size * i: chunk_size * (i + 1)])
-    chunks.append(df.iloc[chunk_size * num:])
-
-    chunk_list = [chunk.reset_index(drop=True) for chunk in chunks]
+    if chunk_size < 0:
+        raise ValueError('size 不能小于 0。')
+    if chunk_size == 0:
+        chunk_size = max(1, len(df))
+    chunk_list = [df.iloc[start:start + chunk_size].reset_index(drop=True)
+                  for start in range(0, len(df), chunk_size)]
+    print('number of chunks:', len(chunk_list))
 
     for i, chunk in enumerate(chunk_list):
         print(f'chunk_{i + 1} shape: {chunk.shape}')

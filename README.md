@@ -1,5 +1,82 @@
 # GUI 虚拟环境搭建
 
+## 2026-10-15 多仓库统一拉取
+
+总仓库已在本地登记六个奖项 Git 子模块，各奖项继续独立维护。配置位于 `.gitmodules`，完整操作见 [仓库管理说明](仓库管理说明.md)。本轮尚未推送这项配置；待提交并发布后，接收人可用 `git clone --recurse-submodules --jobs 4 https://github.com/jiaaol66-collab/Golden_Bull_Projects.git` 一次取得总仓库和六个奖项的已提交代码，私有仓库仍需分别具备访问权限。
+
+本次只登记现有已发布提交，不自动上传本地修改或被忽略的年份工作区；数据位置、业务步骤和运行环境不变，无需重跑奖项流程。隔离递归克隆与原有文件保护的验收结果记录在 `logs/submodule_setup/latest.json`，进展见 `HANDOFF.md`。
+
+六个子仓库根目录分别添加 `.gitkeep`，由各自仓库跟踪。普通克隆总仓库会留下子模块目录空壳；需要代码时，在总仓库根运行 `git submodule update --init --recursive --jobs 4`。这不改变现有子模块版本，分步命令见 [仓库管理说明](仓库管理说明.md)。
+
+## 2026-10-15 提交排除范围
+
+根 `.gitignore` 用 `/_codex*/` 统一忽略 Codex 临时目录，不逐个列出其中的依赖文件；`AGENTS.md`、`HANDOFF.md` 和 Terminal 内部审核稿保留在本地。券商资管的两个新增备份快照由该子仓库的 `.gitignore` 精确排除，文件仍保留。
+
+一键环境所需的 `env_setup/runtime.json` 和正式 ZIP 设为允许提交，`myenv`、日志、验证摘要及原有数据忽略范围不变。忽略规则不会移除已跟踪文件或遮蔽已有删除；本次只调整 Git 排除范围，不改业务代码、数据来源或写入位置，无需重跑业务。
+
+## 2026-10-15 相对路径规范
+
+版本控制范围按总仓库及六个奖项子仓库各自的 Git 跟踪清单确定，包含被跟踪的历史代码备份与说明；日志和运行环境不修改。通用规则如下：
+
+- 本 README 的命令均从项目根目录运行；奖项 README 的命令从对应奖项仓库根目录运行。
+- Notebook 保存输出里的项目路径以总仓库根目录 `./` 为基准；代码单元、执行序号及输出的业务内容保留。历史临时目录仅用 `%TEMP%` 表示，不创建或重跑这些历史文件。
+- Word 文件链接以该文档所在目录为基准，使用 `/`；历史目标仍指向原记录所述的项目位置，不将路径替换视为历史文件已存在的证明。分析师旧说明里的用户目录示例改为当前项目目录。
+- 分析师 `skills/backfill-wind-shareholders` 的三个 JSON 中，`workbook` 以该 JSON 所在目录为基准。界面预览示例路径以总仓库根目录为基准。
+- 系统字体、Python 和 Notebook 快捷方式通过项目相对位置、当前用户或系统环境变量定位；不硬编码盘符和用户名。私募信息截图脚本依次探测项目 `myenv`、当前用户 Python/Scoop 和 PATH，跳过不可用候选，不安装或重建环境。
+
+用户确认以下四个分析师 Excel 为楼下环境版本，整文件保留，包括其 Wind 插件链接：`代码备份/代码_v20260729_103400/模板/2025/模板复制.xlsx`、`代码备份/代码_v20260729_103400/模板/2026/模板复制.xlsx`、`原始数据集/通用/分析师买方反应公式版.xlsx`、`原始数据集/通用/模板复制.xlsx`（均相对 `GB_BrokerAnalyst/`）。
+
+本轮不改业务输入、输出位置或评奖算法，无需重跑数据流程。已校验 Notebook 代码单元、Office 包内未修改部件及四个保留文件哈希，并验证脚本语法、资源查找、快捷方式与相关接口测试。Word 可见文字修改尚未完成版面验收：本会话的 LibreOffice 缺失，Word COM 因登录会话不可用而无法渲染。各子仓库保留独立未提交修改，本轮未暂存、提交或推送。
+
+## 2026-10-15 一键配置项目环境
+
+沿用根目录 `一键配置环境.cmd` 和 `env_setup/setup.ps1`。双击 CMD，或按下列命令运行，自动检查 Python、创建项目根 `myenv`、安装固定版本依赖并核验。2026-10-15 修正 CMD 的参数转发，`-CheckOnly` 现在也可从 CMD 入口传入；错误提示显示项目内日志的绝对路径。同时规范 Windows 换行，并在 CMD 子进程内重置继承的模块搜索路径，修复从 PowerShell 7 调用时找不到内置命令的问题；不改用户或系统的持久配置。安装逻辑及固定版本未变。
+
+新电脑先取得完整项目（含 `base.txt`、`userlib` 等代码），再将 `env_setup/GoldenBull_一键环境包.zip` 解压到该项目根目录；ZIP 只含环境入口和配置，不含项目代码、Python 安装器或依赖包。需要 64 位 Windows、可运行 `powershell.exe`，能写入项目目录与当前用户目录，首次安装需联网下载 Python 和 PyPI 依赖。入口仅准备环境，业务步骤仍按原方式运行。
+
+在 **PowerShell** 中，从项目目录运行（CMD 入口结束后会等待按键）：
+
+```powershell
+# 先在项目根目录打开终端（应能看到 base.txt）
+.\一键配置环境.cmd
+```
+
+在 **CMD 命令提示符**中，先在项目根目录打开终端，再执行 `一键配置环境.cmd`。若从另一个 `.bat/.cmd` 调用，请在路径前加 `call`。
+
+需要执行结束自动返回命令行时，直接调用同一个 PowerShell 脚本；以下相对路径命令在 PowerShell 和 CMD 中均从项目根目录运行：
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\env_setup\setup.ps1"
+```
+
+**只检查已有环境，不安装或更新依赖**（退出码 0 表示通过，1 表示失败）：
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\env_setup\setup.ps1" -CheckOnly
+```
+
+项目目录也可执行 `.\一键配置环境.cmd -CheckOnly`，结果显示在终端并等待按键。`CheckOnly` 不创建 myenv，不写入或刷新安装日志与结果 JSON；不能把磁盘上旧的 PASS 当作本次检查结果。示例路径均以项目根目录为基准；更换电脑时先进入实际项目目录。
+
+本包匹配当前已验证的 **Python 3.11.3 x64**，依赖固定在 `env_setup/requirements.lock.txt`，来自现有根 `requirements.txt` 的163项版本；原文件保留。`env_setup/runtime.json` 保存Python下载地址、版本和依赖清单哈希，`env_setup/setup.ps1` 执行安装。使用Python官方Windows安装包，下载后检查Python Software Foundation数字签名；只安装当前用户版本，不改系统PATH。已有对应版本Python可复用；已有正确myenv只补缺失或不同版本依赖。版本错误、损坏或指向链接的myenv保留并明确报错，不自动删除。
+
+最后检查固定依赖版本、`pip check`（检查依赖之间是否兼容）和项目常用模块的正常导入。普通配置日志与结果在项目内 `logs/environment_setup/latest.log` 和 `latest.json`；如在目录、锁文件或并发锁等预检查阶段失败，可能尚未写入本次日志，以本次终端错误和退出码为准。无需手动激活环境，后续脚本使用根 `myenv/Scripts/python.exe`；Notebook 内核如需注册，按下方可选步骤操作。Wind／iFinD终端、供应商授权、Office及Mosek等外部许可仍按原方式配置。
+
+下载或依赖安装中断时，待本次配置进程结束后，重新执行原命令即可；正确的 myenv 会复用，已满足的依赖跳过，`logs/environment_setup/pipcache` 缓存供续跑使用，不要为重跑删除 myenv。若报 myenv 版本不符、损坏或为链接，先退出相关终端、IDE 和 Notebook，保留旧环境，确认后改名留存再处理；入口不会自动删除它。源码包仍先使用固定 wheel 0.45.1 构建，并使用 UTF-8 处理中文路径。
+
+2026-10-15 重新核验本机已有环境；2026-10-09 已验证复用现有 Python 的空 myenv 创建、实际安装全部 163 项依赖、pip check 及项目导入。Python 官方安装器历史下载与签名验证通过，**尚未在无 Python 的全新 Windows 上执行系统安装**。本次不重复全量安装；当前证据与 ZIP 哈希记录在 `env_setup/验证摘要.json` 及 `HANDOFF.md`。
+
+来源：[Python官方Windows安装文档](https://docs.python.org/3.11/using/windows.html#installing-without-ui)、[Python 3.11.3发布页](https://www.python.org/downloads/release/python-3113/)。
+
+## 2026-09-06 临时文件清理约定
+
+本项目增加两层清理：Codex 每天北京时间 17:00 定期检查本目录；每次项目工作结束后，按根目录 `AGENTS.md` 检查本次临时产物。优先检查超过 100 MiB 的临时文件/目录，确认不再需要后精确删除，不以大小、文件名或 Git 忽略状态代替用途判断。
+
+源代码、原始数据、数据库、正式成果、恢复快照、历史备份及运行环境均保留；正在运行、需续跑或用途不明的文件跳过。清理前后核对项目文件和原有 Git 改动，精简结果写入 `logs/project_cleanup/latest.json`，盘点中间清单用完即删。本次只增加根目录约定并清理可重新生成的缓存，无奖项业务步骤变化，无需重跑业务。定期任务依赖电脑开机且 Codex 桌面应用运行。
+
+## 2026-09-05 评选管理系统界面
+
+`run_modern_terminal.bat` 现承载绿色评选管理系统：工作区选择后进入工作总览，再按任务执行、流水线、数据与结果、历史记录、管理中心使用。界面改动位于 `modern_terminal/ui/index.html`、`app.js` 和新增 `management.css`；`main.py` / `modern_terminal/api.py` 同步桌面标题及窗口定位。管理中心保留完整旧功能窗口入口，运行与数据写入仍使用原内核，无需重跑奖项步骤。操作说明、验证范围和当前 Python 环境限制见 [管理系统说明](modern_terminal/README.md)。
+
 ## 创建 `myenv` 虚拟环境
 
 建议把项目虚拟环境直接建在仓库根目录，名称统一为 `myenv`。这样做有两个好处：
@@ -7,7 +84,7 @@
 - 环境跟项目放在一起，迁移和排查更直观
 - 后续给 notebook 绑定 kernel、给 IDE 选解释器时都更方便
 
-推荐 Python 版本使用 `3.10.x ~ 3.11.x`。
+以下是手动操作说明；新电脑优先使用上方一键入口。一键环境固定为 **Python 3.11.3 x64**，手动搭建也应使用这个版本，避免与检查口径不符。
 
 不强依赖 `conda` 或 `anaconda`，直接使用 Python 自带的 `venv` 即可。
 
@@ -26,13 +103,7 @@ python -m venv myenv
 myenv\Scripts\activate
 ```
 
-如果需要删除已经创建好的 `myenv`，先确保相关终端、IDE、notebook kernel 都已经退出，再回到项目根目录执行：
-
-```bash
-rmdir /s /q myenv
-```
-
-删除后如需重建，再重新执行 `python -m venv myenv` 即可。
+已有 `myenv` 时先执行上方 `-CheckOnly`；通过则直接复用。安装中断通常只需重跑一键入口。若环境损坏或 Python 版本不符，应先退出使用它的终端、IDE 和 Notebook，确认后将旧环境改名留存，再由一键入口创建；不要直接删除现有环境。
 
 激活成功后，先确认当前 Python 指向项目里的 `myenv`：
 
@@ -44,18 +115,13 @@ python -c "import sys; print(sys.executable)"
 ![alt text](images/image.png)
 ## 安装基础包并关联 notebook kernel
 
-激活 `myenv` 之后，先安装项目依赖：
+先运行上方一键入口安装并核验锁定依赖。已有正确环境会复用，无需重新安装或额外升级到最新版本：
 
 ```bash
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+一键配置环境.cmd
 ```
 
-如果 `requirements.txt` 里没有包含 `ipykernel` / `notebook` / `jupyter`，再补装一次：
-
-```bash
-python -m pip install ipykernel notebook jupyter
-```
+固定依赖已经包含 `ipykernel`、`notebook` 和 `jupyter`，无需另外补装。
 
 然后把这个虚拟环境注册成 Jupyter kernel，统一命名为 `GB_env`：
 
@@ -351,7 +417,7 @@ jupyter kernelspec uninstall GB_env
 - 流水线摘要区改为展示全部记录：原先 `pipeline_gantt.py` 中“最近记录摘要”只显示倒序最近 8 条，现已改为按当前尝试的完整记录倒序全部展示，并将标题同步改为 `本次全部记录 (N 条)`，不再截断。
 - 流水线点击行为继续细分：上方泳道图色块继续打开对应代码文件；下方 `本次全部记录` 中每一条记录改为优先打开该条记录对应的归档日志文件，形成“上方看代码、下方看日志”的固定交互。
 - 兼容旧相对路径记录：针对历史尝试中异步条目的 `rel_path` 可能写成 `..\\..\\..\\step_xxx\\...` 的情况，流水线页在打开上方色块前会先结合 `parent_rel` 回推真实代码路径，避免旧记录点击后飘到工作区外。
-- 旧异步记录路径兼容再补强：对于会被解析成 `E:\\work\\SIDE\\step_xxx\\...` 这类明显脱离工作区根目录的旧记录，现新增“剥离前置 `..` 后重新拼回 `AWARD_ROOT/工作区`”的兜底解析，确保像 `step_6 信息汇总/1_信息汇总.py` 这类代码仍能从流水线色块正确打开。
+- 旧异步记录路径兼容再补强：对于会被解析成 `../../step_xxx/...` 这类明显脱离工作区根目录的旧记录，现新增“剥离前置 `..` 后重新拼回 `AWARD_ROOT/工作区`”的兜底解析，确保像 `step_6 信息汇总/1_信息汇总.py` 这类代码仍能从流水线色块正确打开。
 
 ### 2026-06-21 15:09:37
 

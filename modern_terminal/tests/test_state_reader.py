@@ -795,7 +795,7 @@ class TerminalBridgeTests(unittest.TestCase):
 
             selection = bridge.management_action({"action": "run-unarranged-code", "workspace_id": workspace_id})
             with mock.patch.object(bridge, "_legacy_workspace_payload", return_value={"workspace_root": str(workspace_root)}):
-                result = bridge.run_manual_code({"workspace_id": workspace_id, "code_id": "inherit.py", "abs_path": "C:/forged.py"})
+                result = bridge.run_manual_code({"workspace_id": workspace_id, "code_id": "inherit.py", "abs_path": str(root.parent / "forged.py")})
 
         self.assertTrue(selection["requires_selection"])
         self.assertEqual(selection["manual_codes"][0]["id"], "inherit.py")
