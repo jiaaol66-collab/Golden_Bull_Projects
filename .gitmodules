@@ -12,7 +12,7 @@
 	branch = main
 [submodule "GB_BrokerBranch"]
 	path = GB_BrokerBranch
-	url = https://github.com/jiaaol66-collab/GB_Brokerbranch.git
+	url = https://github.com/jiaaol66-collab/GB_BrokerBranch.git
 	branch = main
 [submodule "GB_PriFund"]
 	path = GB_PriFund
