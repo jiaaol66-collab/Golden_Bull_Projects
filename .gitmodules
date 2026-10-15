@@ -1,0 +1,24 @@
+[submodule "GB_BankWM"]
+	path = GB_BankWM
+	url = https://github.com/jiaaol66-collab/GB_BankWM.git
+	branch = main
+[submodule "GB_BrokerAM"]
+	path = GB_BrokerAM
+	url = https://github.com/jiaaol66-collab/GB_BrokerAM.git
+	branch = main
+[submodule "GB_BrokerAnalyst"]
+	path = GB_BrokerAnalyst
+	url = https://github.com/jiaaol66-collab/GB_BrokerAnalyst.git
+	branch = main
+[submodule "GB_BrokerBranch"]
+	path = GB_BrokerBranch
+	url = https://github.com/jiaaol66-collab/GB_Brokerbranch.git
+	branch = main
+[submodule "GB_PriFund"]
+	path = GB_PriFund
+	url = https://github.com/jiaaol66-collab/GB_PriFund.git
+	branch = main
+[submodule "GB_PubFund"]
+	path = GB_PubFund
+	url = https://github.com/jiaaol66-collab/GB_PubFund.git
+	branch = main
